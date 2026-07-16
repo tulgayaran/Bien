@@ -6,12 +6,13 @@ using System.Threading.Tasks;
 namespace Bien.Core.AI
 {
     /// <summary>
-    /// Üç zorluk da aynı iskeleti kullanır; farkları parametrik:
-    ///   Attention  — kart sayma kalitesi (Easy .20 / Normal .50 / Hard 1.0)
-    ///   BidNoise   — ihale tahminine eklenen gürültü genliği
-    ///   Optimism   — yuvarlama eğilimi (+: fazla söyler, riskli)
-    ///   ReadsBids  — Hard: diğer ihalelerden masa yoğunluğunu okur
-    ///   SloppyPlay — bu oranda plansız rastgele hamle (Easy'nin dağınıklığı)
+    /// Üç zorluk aynı iskelet, farklar parametrik:
+    ///   Attention — kart sayma kalitesi (Easy .20 / Normal .50 / Hard 1.0)
+    ///   DevProb   — ihalede sapma olasılığı (Tulga kuralı)
+    ///   DevMag    — sapma genliği: toplam ± U(0..mag) × kartSayısı
+    ///   SloppyPlay— plansız rastgele hamle oranı
+    /// İHALE = TULGA PUANLAMASI: koz A=1.0→...→5=0.1, altı 0.05;
+    /// yan A=0.8→...→7=0.1, altı 0. Toplam yuvarlanır (Hard), Normal/Easy olasılıkla sapar.
     /// </summary>
     public class TableAgent : IPlayerAgent, IGameObserver
     {
@@ -20,16 +21,13 @@ namespace Bien.Core.AI
 
         protected readonly Random Rng;
         protected readonly GameMemory Mem = new();
-        private readonly double _bidNoise, _optimism, _sloppyPlay;
-        private readonly bool _readsBids;
+        private readonly double _devProb, _devMag, _sloppyPlay;
 
-        public TableAgent(Random rng, double attention, double bidNoise, double optimism,
-                          bool readsBids, double sloppyPlay)
+        public TableAgent(Random rng, double attention, double devProb, double devMag, double sloppyPlay)
         {
             Rng = rng;
             Mem.Attention = attention;
-            _bidNoise = bidNoise; _optimism = optimism;
-            _readsBids = readsBids; _sloppyPlay = sloppyPlay;
+            _devProb = devProb; _devMag = devMag; _sloppyPlay = sloppyPlay;
         }
 
         // ---- IGameObserver ----
@@ -39,83 +37,104 @@ namespace Bien.Core.AI
         public void OnCardPlayed(int s, Card c) => Mem.OnCardPlayed(s, c);
         public void OnTrickWon(int w) => Mem.OnTrickWon(w);
 
-        // ---- İhale: tablo bazlı ----
+        // ---- İhale: Tulga puanlaması ----
+        public static double CardPoints(Card c, Suit? trump, int roundSize)
+        {
+            int r = (int)c.Rank;
+
+            if (trump.HasValue && c.Suit == trump.Value)
+            {
+                double p = r >= 5 ? (r - 4) / 10.0 : 0.05;   // A=1.0, K=0.9 ... 5=0.1, altı 0.05
+                // Küçük tur koz takviyesi: 1 kart %20 → 5 kart %10 (lineer), 6+ değişmez
+                if (roundSize <= 5)
+                    p *= 1.0 + (0.20 - (roundSize - 1) * 0.025);
+                return p;
+            }
+
+            if (!trump.HasValue)
+            {
+                // SANS: her renk kendi içinde koz gibi ama merdiven DİK — büyükler kral,
+                // küçükler ölü. Sağlama: el başına ~3.4 → masa toplamı ~13.6 ≈ 13 el ✓
+                return r switch
+                {
+                    14 => 1.00,
+                    13 => 0.85,
+                    12 => 0.65,
+                    11 => 0.45,
+                    10 => 0.30,
+                    9 => 0.15,
+                    8 => 0.05,
+                    _ => 0.0
+                };
+            }
+            return r >= 7 ? (r - 6) / 10.0 : 0.0;            // yan: A=0.8 ... 7=0.1, altı 0
+        }
+
+        public static double HandPoints(IReadOnlyList<Card> hand, Suit? trump, int roundSize)
+        {
+            double sum = 0;
+            foreach (var c in hand) sum += CardPoints(c, trump, roundSize);
+            return sum;
+        }
+
+        protected HandPlan Plan; // tur planı: ihalede kurulur, oyunda revize edilir
+
         public Task<int> MakeBidAsync(int seat, IReadOnlyList<Card> hand, RoundConfig round, Suit? trump,
                                       IReadOnlyList<int?> bidsSoFar, int? forbidden)
         {
             int n = round.CardsPerPlayer;
-            int myTL = trump.HasValue ? hand.Count(c => c.Suit == trump.Value) : 0;
-            var ps = hand.Select(c => BidTable.CardP(c, trump, n, myTL)).ToArray();
+            Plan = HandPlan.Build(hand, trump, n);
+            double raw = Plan.RawBid; // W + S/2
+            double adjusted = raw;
+            bool deviated = false;
 
-            // Masa okuma (Hard): ihaleler adil paydan sapıyorsa ORTADA kartların p'sini eğ
-            double pressureAdj = 0;
-            if (_readsBids)
+            if (forbidden == null && _devProb > 0 && Rng.NextDouble() < _devProb)
             {
-                var others = bidsSoFar.Where(b => b.HasValue).Select(b => b.Value).ToList();
-                if (others.Count > 0)
-                {
-                    double fairShare = n * others.Count / 4.0;
-                    pressureAdj = -(others.Sum() - fairShare) / Math.Max(1.0, n) * 0.35;
-                    for (int i = 0; i < ps.Length; i++)
-                        if (ps[i] > 0.15 && ps[i] < 0.85)
-                            ps[i] = Math.Clamp(ps[i] + pressureAdj, 0.02, 0.98);
-                }
-            }
-            // İyimserlik: tüm p'lere hafif eğim (Easy fazla umutlu, Hard temkinli)
-            if (_optimism != 0)
-                for (int i = 0; i < ps.Length; i++)
-                    ps[i] = Math.Clamp(ps[i] + _optimism * 0.10, 0.0, 1.0);
-
-            // Poisson-binomial: P(k el alırım) dağılımı
-            // (dist[0] her kartta güncellenmeli — sonda toplu çarpmak dağılımı bozar!)
-            var dist = new double[n + 1];
-            dist[0] = 1;
-            foreach (var p in ps)
-            {
-                for (int k = Math.Min(n, hand.Count); k >= 1; k--)
-                    dist[k] = dist[k] * (1 - p) + dist[k - 1] * p;
-                dist[0] *= (1 - p);
+                // Mizaç: ± U(0..mag) × kart sayısı — büyük ellerde acemilik daha pahalı
+                adjusted += (Rng.NextDouble() * 2 - 1) * _devMag * n;
+                deviated = true;
             }
 
-            // EV maksimizasyonu: argmax P(b) × (b² + 10), yasak hariç
-            int bid = 0; double bestEv = double.MinValue;
-            var evDbg = new List<string>();
-            for (int b = 0; b <= n; b++)
-            {
-                double ev = dist[b] * (b * b + ScoreEngine.MakeBonus);
-                if (b <= Math.Min(n, hand.Count) && dist[b] > 0.01)
-                    evDbg.Add($"P({b})=%{dist[b] * 100:F0}→{ev:F1}");
-                if (forbidden.HasValue && b == forbidden.Value) continue;
-                if (ev > bestEv) { bestEv = ev; bid = b; }
-            }
+            // Yuvarlama: tam .5 kesirler AŞAĞI (tek Swing yazı-turadır, ihale değil — temkin)
+            int bid = forbidden.HasValue
+                ? NearestLegal(raw, n, forbidden.Value) // zorunlu yeniden ihale: ham değere en yakın legal
+                : Math.Clamp((int)Math.Ceiling(adjusted - 0.5), 0, n);
 
-            // Mizaç (Easy): gürültü oranında ±1 sapma
-            if (_bidNoise > 0 && Rng.NextDouble() < _bidNoise * 0.35)
-            {
-                int alt = bid + (Rng.NextDouble() < 0.5 ? -1 : 1);
-                if (alt >= 0 && alt <= n && (!forbidden.HasValue || alt != forbidden.Value)) bid = alt;
-            }
+            Plan.Commit(bid);
 
             if (Debug != null)
             {
-                var parts = hand.OrderByDescending(c => BidTable.CardP(c, trump, n, myTL))
-                    .Select(c => $"{c} {BidTable.CardP(c, trump, n, myTL):F2}");
-                string msg = $"İHALE {bid} ← {string.Join(" ", parts)} | {string.Join(", ", evDbg.Take(4))}";
-                if (pressureAdj != 0) msg += $" | masa {pressureAdj:+0.00;-0.00}";
-                if (forbidden.HasValue) msg += $" | yasak: {forbidden.Value}";
+                var parts = hand.OrderByDescending(c => CardPoints(c, trump, n))
+                                .Select(c => $"{c} {CardPoints(c, trump, n):F2}");
+                string msg = $"İHALE {bid} ← {string.Join(" ", parts)} | W+S/2 = {Plan.Winners}+{Plan.Swings}/2 = {raw:F1}";
+                if (deviated) msg += $" | mizaç → {adjusted:F2}";
+                if (forbidden.HasValue) msg += $" | yasak {forbidden.Value}, en yakın legal";
                 Debug(msg);
+                Debug($"PLAN: {Plan.Describe()} | mod: {Plan.Stance}");
             }
             return Task.FromResult(bid);
+        }
+
+        private static int NearestLegal(double raw, int n, int forbidden)
+        {
+            int best = -1; double bestDist = double.MaxValue;
+            for (int b = 0; b <= n; b++)
+            {
+                if (b == forbidden) continue;
+                double d = Math.Abs(raw - b);
+                if (d < bestDist || (d == bestDist && b < best)) { bestDist = d; best = b; }
+            }
+            return best;
         }
 
         public Task<int?> OfferBidRevisionAsync(int seat, IReadOnlyList<Card> hand, RoundConfig round, Suit? trump,
                                                 IReadOnlyList<int?> currentBids, int dealerDesiredBid)
         {
-            // Öz çıkar: tahmin mevcut ihaleden belirgin sapıyorsa oynat, değilse karışma
-            double est = BidTable.ExpectedTricks(hand, trump, round.CardsPerPlayer);
+            // Öz çıkar: ham W+S/2 mevcut ihalemden belirgin sapıyorsa 1 oynat
+            double sum = Plan?.RawBid ?? HandPlan.Build(hand, trump, round.CardsPerPlayer).RawBid;
             int cur = currentBids[seat] ?? 0;
-            int alt = est > cur ? cur + 1 : cur - 1;
-            if (Math.Abs(est - cur) >= 0.7 && alt >= 0 && alt <= round.CardsPerPlayer)
+            int alt = sum > cur ? cur + 1 : cur - 1;
+            if (Math.Abs(sum - cur) >= 0.7 && alt >= 0 && alt <= round.CardsPerPlayer)
                 return Task.FromResult<int?>(alt);
             return Task.FromResult<int?>(null);
         }
@@ -123,6 +142,15 @@ namespace Bien.Core.AI
         // ---- Oyun ----
         public Task<Card> PlayCardAsync(int seat, IReadOnlyList<Card> hand, TrickState trick, RoundConfig round, Suit? trump)
         {
+            // Her hamleden önce plan tazelenir: W + S/2 ≈ kalan ihtiyaç, mod = masa dengesi
+            int tableSurplus = round.CardsPerPlayer - (Mem.Bids[0] + Mem.Bids[1] + Mem.Bids[2] + Mem.Bids[3]);
+            if (Plan != null && Debug != null)
+            {
+                var changes = Plan.Rebalance(hand, trump, round.CardsPerPlayer, Mem.TricksWon[seat], Mem, tableSurplus);
+                foreach (var ch in changes) Debug($"  PLAN {ch}");
+            }
+            else Plan?.Rebalance(hand, trump, round.CardsPerPlayer, Mem.TricksWon[seat], Mem, tableSurplus);
+
             var legal = GameRules.LegalPlays(hand, trick.LedSuit, trump);
             if (legal.Count > 1 && Rng.NextDouble() < _sloppyPlay)
             {
@@ -130,8 +158,20 @@ namespace Bien.Core.AI
                 Debug?.Invoke($"{slip} — dalgınlık, plansız attım");
                 return Task.FromResult(slip);
             }
-            var card = Policy.Decide(seat, hand, trick, trump, Mem, Rng, out string reason);
-            Debug?.Invoke($"{card} — {reason}");
+            Card card; string reason;
+            // Kural kitabı: kişisel ihtiyacı bitmiş (veya batmış) oyuncuya uygulanır.
+            // Masa-fazlalığı Ducking'i ihtiyacı sürenlere D5 ile As attırıyordu (turnuva yakaladı) —
+            // onlar şimdilik eski politikada; "fazlalıkta pasif oyun" kuralları ayrıca yazılacak.
+            bool needDone = Plan != null && Plan.TargetTricks - Mem.TricksWon[seat] <= 0;
+            if (Plan != null && Plan.Stance == PlayerStance.Ducking && needDone)
+                card = DuckingBook.Decide(hand, trick, trump, Mem, Rng, out reason);
+            else if (Plan != null && Plan.Stance == PlayerStance.Hunting)
+                card = HuntingBook.Decide(seat, hand, trick, trump, Mem, Plan, Rng, out reason);
+            else if (Plan != null && Plan.Stance == PlayerStance.Balanced)
+                card = BalancedBook.Decide(seat, hand, trick, trump, Mem, Plan, Rng, out reason);
+            else
+                card = Policy.Decide(seat, hand, trick, trump, Mem, Rng, out reason);
+            Debug?.Invoke($"{card} [{Plan?.RoleOf(card)}, mod {Plan?.Stance}] — {reason}");
             return Task.FromResult(card);
         }
     }
@@ -139,19 +179,19 @@ namespace Bien.Core.AI
     public sealed class EasyAgent : TableAgent
     {
         public EasyAgent(Random rng)
-            : base(rng, attention: 0.20, bidNoise: 1.1, optimism: +0.35, readsBids: false, sloppyPlay: 0.35) { }
+            : base(rng, attention: 0.20, devProb: 0.50, devMag: 0.20, sloppyPlay: 0.35) { }
     }
 
     public sealed class NormalAgent : TableAgent
     {
         public NormalAgent(Random rng)
-            : base(rng, attention: 0.50, bidNoise: 0.35, optimism: 0.0, readsBids: false, sloppyPlay: 0.06) { }
+            : base(rng, attention: 0.50, devProb: 0.30, devMag: 0.10, sloppyPlay: 0.06) { }
     }
 
     public sealed class HardAgent : TableAgent
     {
         public HardAgent(Random rng)
-            : base(rng, attention: 1.00, bidNoise: 0.0, optimism: -0.10, readsBids: true, sloppyPlay: 0.0) { }
+            : base(rng, attention: 1.00, devProb: 0.0, devMag: 0.0, sloppyPlay: 0.0) { }
     }
 
     /// <summary>İhtiyaç bazlı ortak oyun politikası — hafıza kalitesi kararları doğal ayrıştırır:

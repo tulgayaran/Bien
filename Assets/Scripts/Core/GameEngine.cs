@@ -37,6 +37,10 @@ namespace Bien.Core
         public readonly int[] TotalScores = new int[4];
         public readonly GameEvents Events = new();
 
+        /// <summary>Turlar arası bekleme kancası: UI burada "son eli göster → tablo → Devam"
+        /// akışını tamamlar; motor Task bitmeden bir sonraki tura BAŞLAMAZ. null ise beklemez.</summary>
+        public Func<RoundResult, bool, Task> InterRoundGate; // (biten tur, sonMuydu)
+
         public GameEngine(IPlayerAgent[] agents, Random rng)
         {
             if (agents.Length != 4) throw new ArgumentException("4 oyuncu gerekli.");
@@ -60,12 +64,16 @@ namespace Bien.Core
         {
             var results = new List<RoundResult>();
             int dealer = firstDealer;
-            foreach (var rc in GameStructure.BuildRounds())
+            var rounds = GameStructure.BuildRounds();
+            for (int ri = 0; ri < rounds.Count; ri++)
             {
-                var r = await PlayRoundAsync(rc, dealer);
+                var r = await PlayRoundAsync(rounds[ri], dealer);
                 results.Add(r);
                 for (int i = 0; i < 4; i++) TotalScores[i] += r.Scores[i];
                 dealer = (dealer + 1) % 4;
+
+                if (InterRoundGate != null)
+                    await InterRoundGate(r, ri == rounds.Count - 1);
             }
             Events.GameEnded?.Invoke(TotalScores);
             return results;

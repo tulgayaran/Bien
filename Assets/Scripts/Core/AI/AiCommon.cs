@@ -122,48 +122,4 @@ namespace Bien.Core.AI
         }
     }
 
-    /// <summary>El gücünden ihale tahmini. Normal ve Hard'ın temeli, Easy gürültülü kullanır.</summary>
-    public static class HandEvaluator
-    {
-        public static double EstimateTricks(IReadOnlyList<Card> hand, Suit? trump)
-        {
-            double est = 0;
-            var bySuit = hand.GroupBy(c => c.Suit).ToDictionary(g => g.Key, g => g.OrderByDescending(c => c.Rank).ToList());
-
-            foreach (var (suit, cards) in bySuit)
-            {
-                bool isTrump = trump.HasValue && suit == trump.Value;
-                int len = cards.Count;
-                foreach (var c in cards)
-                {
-                    if (c.Rank == Rank.Ace) est += isTrump ? 1.0 : 0.95;
-                    else if (c.Rank == Rank.King) est += len >= 2 ? 0.7 : 0.35;
-                    else if (c.Rank == Rank.Queen) est += len >= 3 ? 0.35 : 0.15;
-                }
-                if (isTrump && len > 3) est += (len - 3) * 0.6; // uzun koz
-                if (!isTrump && !trump.HasValue && len > 4) est += (len - 4) * 0.45; // sans'ta uzun renk
-            }
-
-            // Kısa yan renk + koz = çakma potansiyeli
-            if (trump.HasValue && bySuit.TryGetValue(trump.Value, out var trumps) && trumps.Count >= 2)
-            {
-                foreach (Suit s in Enum.GetValues(typeof(Suit)))
-                {
-                    if (s == trump.Value) continue;
-                    int len = bySuit.TryGetValue(s, out var cs) ? cs.Count : 0;
-                    if (len == 0) est += 0.8;
-                    else if (len == 1) est += 0.4;
-                }
-            }
-            return Math.Min(est, hand.Count);
-        }
-
-        public static int LegalizeBid(int bid, int maxBid, int? forbidden)
-        {
-            bid = Math.Clamp(bid, 0, maxBid);
-            if (forbidden.HasValue && bid == forbidden.Value)
-                bid = bid > 0 ? bid - 1 : bid + 1;
-            return Math.Clamp(bid, 0, maxBid);
-        }
-    }
 }

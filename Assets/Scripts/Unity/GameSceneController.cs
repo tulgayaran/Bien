@@ -16,8 +16,14 @@ namespace Bien.Unity
     /// </summary>
     public class GameSceneController : MonoBehaviour
     {
-        [Header("AI")]
-        public AiDifficulty aiDifficulty = AiDifficulty.Normal;
+        // Zorluklar oyun içi ZORLUK panelinden seçilir, PlayerPrefs'te kalıcıdır.
+        static readonly string[] DiffKeys = { "", "diff_bati", "diff_kuzey", "diff_dogu" };
+
+        static AiDifficulty LoadDiff(int seat) =>
+            (AiDifficulty)PlayerPrefs.GetInt(DiffKeys[seat], (int)AiDifficulty.Normal);
+
+        static void SaveDiff(int seat, AiDifficulty d) =>
+            PlayerPrefs.SetInt(DiffKeys[seat], (int)d);
 
         [Header("Debug")]
         [Tooltip("AI elleri açık oynanır ve kararların gerekçesi ekrana yazılır")]
@@ -34,8 +40,8 @@ namespace Bien.Unity
         readonly Text[] _seatLabels = new Text[4];
         readonly Text[] _bidLabels = new Text[4];
         readonly RectTransform[] _aiBackAreas = new RectTransform[3]; // seat 1,2,3
-        Image _trumpImage; Text _trumpText, _roundText, _scoreText, _statusText, _debugText, _bidTotalText;
-        readonly Queue<string> _debugLines = new();
+        Image _trumpImage; Text _trumpText, _roundText, _scoreText, _statusText, _bidTotalText;
+        AiDifficulty[] _seatDiffs;
         readonly int?[] _bidsThisRound = new int?[4];
         readonly List<RoundResult> _history = new();
         RoundConfig _curRound;
@@ -70,17 +76,23 @@ namespace Bien.Unity
             Func<Task> gate = () => _gate;
             var agents = new IPlayerAgent[4];
             agents[0] = new PacedAgent(_human, gate, 0);
+            AiLogger.StartSession();
+            _seatDiffs = new[] { AiDifficulty.Normal, LoadDiff(1), LoadDiff(2), LoadDiff(3) };
+            AiLogger.Write($"Masa: BATI={LoadDiff(1)} KUZEY={LoadDiff(2)} DOĞU={LoadDiff(3)}");
+            var seatDiffs = _seatDiffs;
+            DebugLine($"Masa kuruldu → BATI={seatDiffs[1]}  KUZEY={seatDiffs[2]}  DOĞU={seatDiffs[3]}");
             for (int s = 1; s <= 3; s++)
             {
-                var ai = AiFactory.Create(aiDifficulty, rng);
-                if (debugMode && ai is TableAgent ta)
+                var ai = AiFactory.Create(seatDiffs[s], rng);
+                if (ai is TableAgent ta)
                 {
                     int seat = s;
-                    ta.Debug = msg => DebugLine($"{SeatNames[seat]}: {msg}");
+                    ta.Debug = msg => AiLogger.Write($"{SeatNames[seat]}: {msg}");
                 }
                 agents[s] = new PacedAgent(ai, gate, 550);
             }
             _engine = new GameEngine(agents, rng);
+            _engine.InterRoundGate = InterRound;
 
             var ev = _engine.Events;
             ev.RoundStarted += OnRoundStarted;
@@ -106,6 +118,7 @@ namespace Bien.Unity
         // ------------------------------------------------------------------ engine events
         void OnRoundStarted(RoundConfig rc, int dealer)
         {
+            AiLogger.Write($"\n--- TUR {rc.RoundIndex + 1}/16 · {rc.CardsPerPlayer} kart · {(rc.HasTrump ? "kozlu" : "SANS")} · dağıtan {SeatNames[dealer]} ---");
             _curRound = rc;
             _curDealer = dealer;
             for (int i = 0; i < 4; i++) _bidsThisRound[i] = null;
@@ -115,7 +128,9 @@ namespace Bien.Unity
             for (int i = 0; i < 4; i++)
             {
                 _bidLabels[i].text = "";
-                _seatLabels[i].text = SeatNames[i] + (i == dealer ? "  (dağıtan)" : "");
+                string diff = (debugMode && i > 0 && _seatDiffs != null)
+                    ? $" [{_seatDiffs[i]}]" : "";
+                _seatLabels[i].text = SeatNames[i] + diff + (i == dealer ? "  (dağıtan)" : "");
             }
             ClearTrick();
             SetStatus("Kartlar dağıtılıyor...");
@@ -167,7 +182,7 @@ namespace Bien.Unity
 
         Vector2 SeatFxPos(int seat) => seat switch
         {
-            0 => new Vector2(debugMode ? 340 : 0, -400),
+            0 => new Vector2(0, -400),
             1 => new Vector2(-870, -40),
             2 => new Vector2(0, 420),
             _ => new Vector2(870, -40),
@@ -267,18 +282,27 @@ namespace Bien.Unity
         void OnRoundEnded(RoundResult r)
         {
             _history.Add(r);
-            var tcs = new TaskCompletionSource<bool>();
-            _continueTcs = tcs;
-            _gate = tcs.Task; // motor Devam'a kadar bekler
-            StartCoroutine(ShowRoundEndDelayed(1.4f)); // son el görünür kalsın, tablo sonra gelsin
+            for (int p = 0; p < 4; p++)
+                AiLogger.Write($"SONUÇ {SeatNames[p]}: ihale {r.Bids[p]}, aldı {r.TricksWon[p]} → {(r.Bids[p] == r.TricksWon[p] ? $"+{r.Scores[p]}" : "BATTI")}");
+            UpdateScoreboard();
         }
 
-        System.Collections.IEnumerator ShowRoundEndDelayed(float sec)
+        /// <summary>Motorun tur-arası kancası: son el 1.4sn masada kalır → tablo + Devam →
+        /// kullanıcı basınca motor yeni tura (dağıtıma) geçer. Son turda ara tablo atlanır,
+        /// finali GameEnded gösterir.</summary>
+        Task InterRound(RoundResult r, bool wasLast)
         {
-            yield return new WaitForSeconds(sec);
+            var tcs = new TaskCompletionSource<bool>();
+            StartCoroutine(InterRoundFlow(wasLast, tcs));
+            return tcs.Task;
+        }
+
+        System.Collections.IEnumerator InterRoundFlow(bool wasLast, TaskCompletionSource<bool> done)
+        {
+            yield return new WaitForSeconds(1.4f); // son el görünür kalsın
             ClearTrick();
-            ShowScoreTable("Devam", () => { HidePopup(); _continueTcs.TrySetResult(true); });
-            UpdateScoreboard();
+            if (wasLast) { done.TrySetResult(true); yield break; } // finali GameEnded tablosu gösterecek
+            ShowScoreTable("Devam", () => { HidePopup(); done.TrySetResult(true); });
         }
 
         void OnGameEnded(int[] totals)
@@ -379,6 +403,12 @@ namespace Bien.Unity
 
             // Puan tablosu butonu (sol üst)
             var tblBtn = MakeButton(_safe, "TABLO", new Vector2(210, 64), new Vector2(0f, 1f), new Vector2(400, -45), 28);
+            var diffBtn = MakeButton(_safe, "ZORLUK", new Vector2(210, 64), new Vector2(0f, 1f), new Vector2(640, -45), 28);
+            diffBtn.onClick.AddListener(() =>
+            {
+                if (_popup.gameObject.activeSelf) return;
+                ShowDifficultyPanel();
+            });
             tblBtn.onClick.AddListener(() =>
             {
                 if (_popup.gameObject.activeSelf) return; // tur sonu tablosu açıkken karışma
@@ -437,41 +467,6 @@ namespace Bien.Unity
             _bidPanel.gameObject.SetActive(false);
 
             // Debug paneli (sol alt)
-            _debugText = MakeText(_safe, "Debug", new Vector2(0f, 0f), new Vector2(36, 24), 24, TextAnchor.LowerLeft);
-            var drt = (RectTransform)_debugText.transform;
-            drt.pivot = new Vector2(0f, 0f);
-            drt.sizeDelta = new Vector2(680, 236);
-            _debugText.color = new Color(0.8f, 0.93f, 1f, 1f);
-            _debugText.horizontalOverflow = HorizontalWrapMode.Wrap;
-            var dbg = new GameObject("DebugBg", typeof(Image));
-            var dbgRt = (RectTransform)dbg.transform;
-            dbgRt.SetParent(_safe, false);
-            dbgRt.anchorMin = dbgRt.anchorMax = new Vector2(0f, 0f);
-            dbgRt.pivot = new Vector2(0f, 0f);
-            dbgRt.anchoredPosition = new Vector2(20, 16);
-            dbgRt.sizeDelta = new Vector2(710, 260);
-            dbg.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.5f);
-            dbgRt.SetSiblingIndex(_debugText.transform.GetSiblingIndex()); // yazının altına
-            dbg.SetActive(debugMode);
-            _debugText.gameObject.SetActive(debugMode);
-
-            if (debugMode)
-            {
-                // El sağa kayar, SEN etiketi panelin üstüne çıkar → çakışma yok
-                _handArea.anchoredPosition = new Vector2(340, 155);
-                var l0 = (RectTransform)_seatLabels[0].transform;
-                l0.anchorMin = l0.anchorMax = new Vector2(0.5f, 0f);
-                l0.anchoredPosition = new Vector2(-620, 388);
-                var b0 = (RectTransform)_bidLabels[0].transform;
-                b0.anchorMin = b0.anchorMax = new Vector2(0.5f, 0f);
-                b0.anchoredPosition = new Vector2(-620, 338);
-                var chip0 = _safe.Find("B0_Chip") as RectTransform;
-                if (chip0 != null)
-                {
-                    chip0.anchorMin = chip0.anchorMax = new Vector2(0.5f, 0f);
-                    chip0.anchoredPosition = new Vector2(-620, 338);
-                }
-            }
 
             // Popup
             _popup = MakePanel(_safe, "Popup", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Color(0f, 0f, 0f, 0.92f));
@@ -558,8 +553,7 @@ namespace Bien.Unity
         {
             int n = _handCards.Count;
             if (n == 0) return;
-            float maxSpread = debugMode ? 1700f : 2100f;
-            float overlap = n > 7 ? (maxSpread - CARD_W) / (n - 1) : CARD_W + 12;
+            float overlap = n > 7 ? (2100f - CARD_W) / (n - 1) : CARD_W + 12;
             overlap = Mathf.Min(overlap, CARD_W + 12);
             float total = CARD_W + (n - 1) * overlap;
             for (int i = 0; i < n; i++)
@@ -596,13 +590,7 @@ namespace Bien.Unity
             }
         }
 
-        void DebugLine(string s)
-        {
-            if (!debugMode) return;
-            _debugLines.Enqueue(s);
-            while (_debugLines.Count > 5) _debugLines.Dequeue();
-            _debugText.text = string.Join("\n", _debugLines);
-        }
+        void DebugLine(string s) => AiLogger.Write(s);
 
         System.Collections.IEnumerator SlideIn(RectTransform rt, Vector2 from, Vector2 to, float dur)
         {
@@ -693,6 +681,72 @@ namespace Bien.Unity
 
             var btn = MakeButton(_popup, btnLabel, new Vector2(380, 92), new Vector2(0.5f, 0f), new Vector2(0, 60), 36);
             btn.onClick.AddListener(() => onClick());
+            _popup.gameObject.SetActive(true);
+        }
+
+        /// <summary>Koltuk başına zorluk seçimi. Kaydet → PlayerPrefs → yeni oyunla başlar.</summary>
+        void ShowDifficultyPanel()
+        {
+            foreach (Transform c in _popup) Destroy(c.gameObject);
+            _popup.sizeDelta = new Vector2(1040, 780);
+            _popup.GetComponent<Image>().color = Color.black;
+
+            var t = MakeText(_popup, "T", new Vector2(0.5f, 1f), new Vector2(0, -55), 42, TextAnchor.MiddleCenter);
+            t.text = "ZORLUK SEVİYESİ";
+            t.fontStyle = FontStyle.Bold;
+
+            var temp = new AiDifficulty[4];
+            for (int s = 1; s <= 3; s++) temp[s] = LoadDiff(s);
+
+            var diffs = new[] { AiDifficulty.Easy, AiDifficulty.Normal, AiDifficulty.Hard };
+            var btnImgs = new Image[5, 3]; // satır 1-3 koltuk, 4 = TÜMÜ
+
+            Color selCol = new Color(0.95f, 0.75f, 0.2f);
+            Color offCol = new Color(0.16f, 0.45f, 0.28f);
+
+            void Refresh()
+            {
+                for (int row = 1; row <= 3; row++)
+                    for (int d = 0; d < 3; d++)
+                        btnImgs[row, d].color = temp[row] == diffs[d] ? selCol : offCol;
+            }
+
+            string[] rowNames = { "", "BATI", "KUZEY", "DOĞU", "TÜMÜ" };
+            for (int row = 1; row <= 4; row++)
+            {
+                float y = -140 - (row - 1) * 110;
+                var lbl = MakeText(_popup, $"RL{row}", new Vector2(0.5f, 1f), new Vector2(-380, y), 32, TextAnchor.MiddleCenter);
+                lbl.text = rowNames[row];
+                if (row == 4) lbl.color = new Color(0.7f, 0.85f, 1f);
+
+                for (int d = 0; d < 3; d++)
+                {
+                    int rr = row; int dd = d;
+                    var b = MakeButton(_popup, diffs[d].ToString(), new Vector2(230, 84),
+                                       new Vector2(0.5f, 1f), new Vector2(-120 + d * 250, y), 30);
+                    btnImgs[row, d] = b.GetComponent<Image>();
+                    b.onClick.AddListener(() =>
+                    {
+                        if (rr == 4) { temp[1] = temp[2] = temp[3] = diffs[dd]; }
+                        else temp[rr] = diffs[dd];
+                        Refresh();
+                    });
+                }
+            }
+            Refresh();
+
+            var apply = MakeButton(_popup, "KAYDET — YENİ OYUN", new Vector2(480, 96), new Vector2(0.5f, 0f), new Vector2(-160, 60), 32);
+            apply.onClick.AddListener(() =>
+            {
+                for (int s = 1; s <= 3; s++) SaveDiff(s, temp[s]);
+                PlayerPrefs.Save();
+                UnityEngine.SceneManagement.SceneManager.LoadScene(
+                    UnityEngine.SceneManagement.SceneManager.GetActiveScene().buildIndex);
+            });
+            var close = MakeButton(_popup, "Vazgeç", new Vector2(260, 96), new Vector2(0.5f, 0f), new Vector2(280, 60), 30);
+            close.GetComponent<Image>().color = new Color(0.35f, 0.35f, 0.4f);
+            close.onClick.AddListener(HidePopup);
+
             _popup.gameObject.SetActive(true);
         }
 
