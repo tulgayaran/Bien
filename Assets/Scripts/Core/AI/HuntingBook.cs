@@ -100,7 +100,9 @@ namespace Bien.Core.AI
                 // ---- H7: Loser'lardan en değersizi; Swing/Winner korunur ----
                 var losers = legal.Where(c => plan.RoleOf(c) == CardRole.Loser).ToList();
                 var pool = losers.Count > 0 ? losers : legal;
-                var dump = pool.OrderBy(c => TableAgent.CardPoints(c, trump, mem.Round.CardsPerPlayer))
+                // Koz en son harcanır: küçük kozun çakma potansiyeli var, yan çöp önce gider
+                var dump = pool.OrderBy(c => trump.HasValue && c.Suit == trump.Value ? 1 : 0)
+                               .ThenBy(c => TableAgent.CardPoints(c, trump, mem.Round.CardsPerPlayer))
                                .ThenBy(c => c.Rank).First();
                 reason = losers.Count > 0 ? "H7: en değersiz Loser'ı atıyorum (sermaye korunur)"
                                           : "H7: mecburen sermayeden — en ucuzunu";

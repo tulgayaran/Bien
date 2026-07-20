@@ -42,6 +42,16 @@ namespace Bien.Unity
         readonly RectTransform[] _aiBackAreas = new RectTransform[3]; // seat 1,2,3
         Image _trumpImage; Text _trumpText, _roundText, _scoreText, _statusText, _bidTotalText;
         AiDifficulty[] _seatDiffs;
+
+        // --- UNDO: deterministik yeniden oynatma. Oyun tohumu + insan hamleleri kaydedilir;
+        // geri almada motor sıfırdan kurulup kayıt son hamle hariç sessizce tekrar oynatılır.
+        // Aynı tohum → AI'lar birebir aynı tepkiyi verir; hafıza/plan dahil tam tutarlılık. ---
+        struct HAct { public char K; public int V; public Card C; }   // K: b=ihale r=revizyon p=kart
+        readonly List<HAct> _acts = new();
+        Queue<HAct> _replay;
+        bool _fast;
+        int _seed, _actsAtRoundStart;
+        Button _undoBtn;
         readonly int?[] _bidsThisRound = new int?[4];
         readonly List<RoundResult> _history = new();
         RoundConfig _curRound;
@@ -65,13 +75,38 @@ namespace Bien.Unity
             BuildUI();
         }
 
-        async void Start()
+        void Start()
         {
-            var rng = new System.Random();
+            _seed = Environment.TickCount;
+            StartNewEngine();
+        }
+
+        async void StartNewEngine()
+        {
+            var rng = new System.Random(_seed);
+            _history.Clear();
+            HidePopup();
+            ClearTrick();
             _human = new HumanAgent();
-            _human.OnBidRequested = ShowBidPanel;
-            _human.OnRevisionRequested = ShowRevisionPanel;
-            _human.OnCardRequested = EnableHandSelection;
+            // İnsan istekleri: kayıt kuyruğu doluysa (undo tekrarı) otomatik cevapla, boşsa UI
+            _human.OnBidRequested = (rc, forb, bids) =>
+            {
+                if (_replay != null && _replay.Count > 0) { _human.SubmitBid(_replay.Dequeue().V); return; }
+                FinishReplay(); ShowBidPanel(rc, forb, bids);
+            };
+            _human.OnRevisionRequested = (desired, bids, rc) =>
+            {
+                if (_replay != null && _replay.Count > 0)
+                { var a = _replay.Dequeue(); _human.SubmitRevision(a.V < 0 ? (int?)null : a.V); return; }
+                FinishReplay(); ShowRevisionPanel(desired, bids, rc);
+            };
+            _human.OnCardRequested = (hand, led, tr) =>
+            {
+                if (_replay != null && _replay.Count > 0) { _human.SubmitCard(_replay.Dequeue().C); return; }
+                FinishReplay(); EnableHandSelection(hand, led, tr);
+                _undoBtn.interactable = _acts.Count > _actsAtRoundStart &&
+                                        _acts.Count > 0 && _acts[_acts.Count - 1].K == 'p';
+            };
 
             Func<Task> gate = () => _gate;
             var agents = new IPlayerAgent[4];
@@ -116,8 +151,40 @@ namespace Bien.Unity
         }
 
         // ------------------------------------------------------------------ engine events
+        void RecordAct(char k, int v, Card c = default)
+        {
+            _acts.Add(new HAct { K = k, V = v, C = c });
+            if (_undoBtn != null) _undoBtn.interactable = false;
+        }
+
+        /// <summary>Son oynanan kartını geri çeker. Ardışık basışlarla tur başına kadar gidilir.</summary>
+        void Undo()
+        {
+            if (_fast) return;
+            if (_acts.Count == 0 || _acts.Count <= _actsAtRoundStart) return;
+            if (_acts[_acts.Count - 1].K != 'p') return; // yalnız kart hamlesi geri alınır
+            _acts.RemoveAt(_acts.Count - 1);
+            _fast = true;
+            PacedAgent.FastMode = true;
+            _gate = Task.CompletedTask;
+            HidePopup();
+            ClearTrick();
+            _replay = new Queue<HAct>(_acts);
+            StartNewEngine(); // eski motor terk edilir (insan beklemesinde asılı, zararsız)
+        }
+
+        void FinishReplay()
+        {
+            if (!_fast) return;
+            _fast = false;
+            PacedAgent.FastMode = false;
+            SetStatus("Geri alındı — sıra sende");
+        }
+
         void OnRoundStarted(RoundConfig rc, int dealer)
         {
+            _actsAtRoundStart = _acts.Count - (_replay?.Count ?? 0);
+            if (_undoBtn != null) _undoBtn.interactable = false;
             AiLogger.Write($"\n--- TUR {rc.RoundIndex + 1}/16 · {rc.CardsPerPlayer} kart · {(rc.HasTrump ? "kozlu" : "SANS")} · dağıtan {SeatNames[dealer]} ---");
             _curRound = rc;
             _curDealer = dealer;
@@ -139,6 +206,7 @@ namespace Bien.Unity
         void OnHandsDealt(IReadOnlyList<Card>[] hands, Card? trumpCard)
         {
             _trumpImage.enabled = false; _trumpText.text = "";
+            if (_fast) { RenderDealt(hands, trumpCard); return; } // tekrar oynatma: animasyonsuz
             var tcs = new TaskCompletionSource<bool>();
             _gate = tcs.Task; // dağıtım bitene kadar motor (ihale) bekler
             StartCoroutine(DealAnimation(hands, trumpCard, tcs));
@@ -163,6 +231,12 @@ namespace Bien.Unity
                 }
             yield return new WaitForSeconds(0.25f);
 
+            RenderDealt(hands, trumpCard);
+            done.TrySetResult(true);
+        }
+
+        void RenderDealt(IReadOnlyList<Card>[] hands, Card? trumpCard)
+        {
             RenderHumanHand(hands[0], interactable: false);
             for (int s = 1; s <= 3; s++)
             {
@@ -176,8 +250,6 @@ namespace Bien.Unity
                 _trumpText.text = "KOZ";
             }
             else { _trumpImage.enabled = false; _trumpText.text = "SANS"; }
-
-            done.TrySetResult(true);
         }
 
         Vector2 SeatFxPos(int seat) => seat switch
@@ -257,9 +329,13 @@ namespace Bien.Unity
             }
             var tc = MakeCardImage(_trickSlots[seat], CardSprites.Get(card), TRICK_W, TRICK_H);
             _trickCards.Add(tc.gameObject);
-            Vector2 slideFrom = SeatFxPos(seat) - _slotPos[seat];
-            tc.anchoredPosition = slideFrom;
-            StartCoroutine(SlideIn(tc, slideFrom, Vector2.zero, 0.22f));
+            if (_fast) tc.anchoredPosition = Vector2.zero;
+            else
+            {
+                Vector2 slideFrom = SeatFxPos(seat) - _slotPos[seat];
+                tc.anchoredPosition = slideFrom;
+                StartCoroutine(SlideIn(tc, slideFrom, Vector2.zero, 0.22f));
+            }
         }
 
         void OnTrickWon(int winner, IReadOnlyList<Card> trick)
@@ -267,6 +343,7 @@ namespace Bien.Unity
             _tricksWonLive[winner]++;
             _bidLabels[winner].text = $"İhale: {_lastBids[winner]}  El: {_tricksWonLive[winner]}";
             SetStatus($"Eli {SeatNames[winner]} aldı");
+            if (_fast) { ClearTrick(); return; }
             var tcs = new TaskCompletionSource<bool>();
             _gate = tcs.Task;
             StartCoroutine(ClearTrickAfter(0.9f, tcs));
@@ -292,6 +369,7 @@ namespace Bien.Unity
         /// finali GameEnded gösterir.</summary>
         Task InterRound(RoundResult r, bool wasLast)
         {
+            if (_fast) return Task.CompletedTask; // tekrar oynatmada duraksız geç
             var tcs = new TaskCompletionSource<bool>();
             StartCoroutine(InterRoundFlow(wasLast, tcs));
             return tcs.Task;
@@ -318,7 +396,8 @@ namespace Bien.Unity
         void ShowBidPanel(RoundConfig rc, int? forbidden, IReadOnlyList<int?> bids)
         {
             SetStatus(forbidden.HasValue ? $"İhaleni seç ({forbidden.Value} yasak — toplam el sayısına eşitleyemezsin)" : "İhaleni seç");
-            BuildBidButtons(rc.CardsPerPlayer, forbidden, b => _human.SubmitBid(b), null);
+            BuildBidButtons(rc.CardsPerPlayer, forbidden,
+                b => { RecordAct('b', b); _human.SubmitBid(b); }, null);
             _bidPanel.gameObject.SetActive(true);
         }
 
@@ -326,8 +405,8 @@ namespace Bien.Unity
         {
             SetStatus($"Dağıtıcı {dealerDesired} demek istiyor ama yasak. İhaleni değiştirir misin?");
             BuildBidButtons(rc.CardsPerPlayer, null,
-                b => _human.SubmitRevision(b),
-                () => _human.SubmitRevision(null));
+                b => { RecordAct('r', b); _human.SubmitRevision(b); },
+                () => { RecordAct('r', -1); _human.SubmitRevision(null); });
             _bidPanel.gameObject.SetActive(true);
         }
 
@@ -357,6 +436,7 @@ namespace Bien.Unity
                 var rt = (RectTransform)g.transform;
                 rt.anchoredPosition = new Vector2(rt.anchoredPosition.x, 0f);
             }
+            RecordAct('p', 0, card);
             _human.SubmitCard(card);
         }
 
@@ -409,6 +489,9 @@ namespace Bien.Unity
                 if (_popup.gameObject.activeSelf) return;
                 ShowDifficultyPanel();
             });
+            _undoBtn = MakeButton(_safe, "GERİ", new Vector2(180, 64), new Vector2(0f, 1f), new Vector2(855, -45), 28);
+            _undoBtn.interactable = false;
+            _undoBtn.onClick.AddListener(Undo);
             tblBtn.onClick.AddListener(() =>
             {
                 if (_popup.gameObject.activeSelf) return; // tur sonu tablosu açıkken karışma

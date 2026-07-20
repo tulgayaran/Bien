@@ -44,10 +44,19 @@ namespace Bien.Core.AI
 
             if (trump.HasValue && c.Suit == trump.Value)
             {
+                // 1 kartlık tur: KESİN olasılık. Kaçış yok, koz her yan kartı döver;
+                // tek soru: 3 rakip kartında benden büyük koz var mı? (50 görünmezden çekiliş)
+                if (roundSize == 1)
+                {
+                    int h = 14 - r; // benden büyük koz adedi
+                    double p1 = 1.0;
+                    for (int i = 0; i < 3; i++) p1 *= (50.0 - h - i) / (50.0 - i);
+                    return p1; // örn. koz 7 → %63, koz 9 → %72, koz A → %100
+                }
                 double p = r >= 5 ? (r - 4) / 10.0 : 0.05;   // A=1.0, K=0.9 ... 5=0.1, altı 0.05
-                // Küçük tur koz takviyesi: 1 kart %20 → 5 kart %10 (lineer), 6+ değişmez
+                // Küçük tur koz takviyesi: 2 kart %26 → 5 kart %15 (lineer), 6+ değişmez
                 if (roundSize <= 5)
-                    p *= 1.0 + (0.20 - (roundSize - 1) * 0.025);
+                    p *= 1.0 + (0.30 - (roundSize - 1) * 0.0375);
                 return p;
             }
 
@@ -84,6 +93,39 @@ namespace Bien.Core.AI
         {
             int n = round.CardsPerPlayer;
             Plan = HandPlan.Build(hand, trump, n);
+
+            // KÜÇÜK TURLAR (≤3 kart): kesin çözücü — dünyaları örnekle, minimax bandından
+            // P(b tutar) çıkar, EV maksimize et. Puan merdiveni yerine gerçek olasılık.
+            if (n <= 3)
+            {
+                int worlds = n == 1 ? 300 : n == 2 ? 350 : 130;
+                int leaderSeat = (Mem.DealerSeat + 1) % 4;
+                var pMake = ExactSolver.MakeProbabilities(hand, seat, trump, Mem.TrumpCard,
+                                                          leaderSeat, Rng, worlds);
+                int exBid = 0; double bestEv = double.MinValue;
+                for (int b = 0; b <= n; b++)
+                {
+                    if (forbidden.HasValue && b == forbidden.Value) continue;
+                    double ev = pMake[b] * (b * b + ScoreEngine.MakeBonus);
+                    if (ev > bestEv) { bestEv = ev; exBid = b; }
+                }
+                // Mizaç: Normal/Easy olasılıkla ±1 şaşar
+                if (_devProb > 0 && Rng.NextDouble() < _devProb)
+                {
+                    int alt = exBid + (Rng.NextDouble() < 0.5 ? -1 : 1);
+                    if (alt >= 0 && alt <= n && (!forbidden.HasValue || alt != forbidden.Value)) exBid = alt;
+                }
+                Plan.Commit(exBid);
+                if (Debug != null)
+                {
+                    var pp = string.Join(", ", Enumerable.Range(0, n + 1)
+                        .Select(b => $"P({b})=%{pMake[b] * 100:F0}"));
+                    Debug($"İHALE {exBid} ← çözücü ({worlds} dünya): {pp}");
+                    Debug($"PLAN: {Plan.Describe()} | mod: {Plan.Stance}");
+                }
+                return Task.FromResult(exBid);
+            }
+
             double raw = Plan.RawBid; // W + S/2
             double adjusted = raw;
             bool deviated = false;
@@ -95,10 +137,36 @@ namespace Bien.Core.AI
                 deviated = true;
             }
 
-            // Yuvarlama: tam .5 kesirler AŞAĞI (tek Swing yazı-turadır, ihale değil — temkin)
-            int bid = forbidden.HasValue
-                ? NearestLegal(raw, n, forbidden.Value) // zorunlu yeniden ihale: ham değere en yakın legal
-                : Math.Clamp((int)Math.Ceiling(adjusted - 0.5), 0, n);
+            // Yuvarlama (Tulga): tam .5 kesir — elde Winner VARSA yukarı (kontrol → cesaret),
+            // yoksa aşağı (kontrolsüz yalnız-Swing yarımı temkinle yutulur).
+            int bid;
+            if (forbidden.HasValue)
+                bid = NearestLegal(raw, n, forbidden.Value); // zorunlu yeniden ihale: en yakın legal
+            else
+            {
+                double fl = Math.Floor(adjusted);
+                bool half = Math.Abs(adjusted - fl - 0.5) < 1e-9;
+                bid = half ? (int)fl + (Plan.Winners >= 1 ? 1 : 0)
+                           : (int)Math.Round(adjusted, MidpointRounding.AwayFromZero);
+                bid = Math.Clamp(bid, 0, n);
+            }
+
+            // Sıfır emniyeti (Tulga, rafine): 0 ancak KAÇABİLEN elle denir. Kaçamayan
+            // Swing/Winner varsa taban 1 — o kart istemeden kazanır, 0 yanar.
+            // Kaçamayan = koz Swing'i/Winner'ı (koz mecburiyeti zorla kazandırır) veya
+            // tekli yan büyüğü (renk açılınca mecburen çıkar). Yanında küçüğü olan yan
+            // büyüğü kaçabilir (altına dalar), o 0'a engel değil.
+            bool zeroLifted = false;
+            if (bid == 0 && (!forbidden.HasValue || forbidden.Value != 1) && n >= 1)
+            {
+                bool unduckable = hand.Any(c =>
+                {
+                    if (CardPoints(c, trump, n) < 0.5) return false;         // Swing altı tehdit değil
+                    if (trump.HasValue && c.Suit == trump.Value) return true; // koz: mecburiyet riski
+                    return hand.Count(h => h.Suit == c.Suit) == 1;            // tekli yan büyüğü
+                });
+                if (unduckable) { bid = 1; zeroLifted = true; }
+            }
 
             Plan.Commit(bid);
 
@@ -108,6 +176,7 @@ namespace Bien.Core.AI
                                 .Select(c => $"{c} {CardPoints(c, trump, n):F2}");
                 string msg = $"İHALE {bid} ← {string.Join(" ", parts)} | W+S/2 = {Plan.Winners}+{Plan.Swings}/2 = {raw:F1}";
                 if (deviated) msg += $" | mizaç → {adjusted:F2}";
+                if (zeroLifted) msg += " | 0 güvensiz (kaçamayan Swing) → 1";
                 if (forbidden.HasValue) msg += $" | yasak {forbidden.Value}, en yakın legal";
                 Debug(msg);
                 Debug($"PLAN: {Plan.Describe()} | mod: {Plan.Stance}");
@@ -162,15 +231,16 @@ namespace Bien.Core.AI
             // Kural kitabı: kişisel ihtiyacı bitmiş (veya batmış) oyuncuya uygulanır.
             // Masa-fazlalığı Ducking'i ihtiyacı sürenlere D5 ile As attırıyordu (turnuva yakaladı) —
             // onlar şimdilik eski politikada; "fazlalıkta pasif oyun" kuralları ayrıca yazılacak.
-            bool needDone = Plan != null && Plan.TargetTricks - Mem.TricksWon[seat] <= 0;
-            if (Plan != null && Plan.Stance == PlayerStance.Ducking && needDone)
+            // Üç mod, üç kitap — icra tamamen kural kitaplarında
+            if (Plan == null)
+                card = BalancedBook.Decide(seat, hand, trick, trump, Mem,
+                        HandPlan.Build(hand, trump, round.CardsPerPlayer), Rng, out reason); // emniyet
+            else if (Plan.Stance == PlayerStance.Ducking)
                 card = DuckingBook.Decide(hand, trick, trump, Mem, Rng, out reason);
-            else if (Plan != null && Plan.Stance == PlayerStance.Hunting)
+            else if (Plan.Stance == PlayerStance.Hunting)
                 card = HuntingBook.Decide(seat, hand, trick, trump, Mem, Plan, Rng, out reason);
-            else if (Plan != null && Plan.Stance == PlayerStance.Balanced)
-                card = BalancedBook.Decide(seat, hand, trick, trump, Mem, Plan, Rng, out reason);
             else
-                card = Policy.Decide(seat, hand, trick, trump, Mem, Rng, out reason);
+                card = BalancedBook.Decide(seat, hand, trick, trump, Mem, Plan, Rng, out reason);
             Debug?.Invoke($"{card} [{Plan?.RoleOf(card)}, mod {Plan?.Stance}] — {reason}");
             return Task.FromResult(card);
         }
@@ -194,132 +264,4 @@ namespace Bien.Core.AI
             : base(rng, attention: 1.00, devProb: 0.0, devMag: 0.0, sloppyPlay: 0.0) { }
     }
 
-    /// <summary>İhtiyaç bazlı ortak oyun politikası — hafıza kalitesi kararları doğal ayrıştırır:
-    /// dikkat düşükse boss tespiti ve boşluk çıkarımı yanılır, aynı kod kötü oynar.</summary>
-    public static class Policy
-    {
-        public static Card Decide(int seat, IReadOnlyList<Card> hand, TrickState trick, Suit? trump,
-                                  GameMemory mem, Random rng)
-            => Decide(seat, hand, trick, trump, mem, rng, out _);
-
-        public static Card Decide(int seat, IReadOnlyList<Card> hand, TrickState trick, Suit? trump,
-                                  GameMemory mem, Random rng, out string reason)
-        {
-            var legal = GameRules.LegalPlays(hand, trick.LedSuit, trump);
-            int need = mem.Bids[seat] - mem.TricksWon[seat];
-            if (legal.Count == 1) { reason = $"tek geçerli kart (ihtiyaç {need})"; return legal[0]; }
-
-            // Her legal kart için yerel alma olasılığı
-            var pw = legal.ToDictionary(c => c, c => Prob.WinProbability(c, hand, trick, trump, mem, seat));
-            bool leading = trick.Cards.Count == 0;
-
-            // Masa dengesi: + ise sahipsiz el var (herkes kaçacak), - ise el kıtlığı (kapışma)
-            int surplus = mem.Round.CardsPerPlayer - (mem.Bids[0] + mem.Bids[1] + mem.Bids[2] + mem.Bids[3]);
-
-            // SAĞLAM garanti: yalnız KOZ boss'u — ne zaman oynansa alır, çakılamaz, el sırası gerektirmez.
-            // (Sans boss'u bozdurma el sırası ister → sağlam sayılmaz. Yan renk As'ı zaten eriyendir.)
-            bool IsStableBank(Card c) => trump.HasValue && c.Suit == trump.Value && mem.IsBoss(c, hand);
-            int stableBank = trump.HasValue ? hand.Count(IsStableBank) : 0;
-
-            if (need > 0 && stableBank >= need)
-            {
-                // Koz garantileri ihtiyacı kapatıyor: GERÇEKTEN kaçabiliyorsam bu eli pas geç, yük at.
-                var reserved = hand.Where(IsStableBank).OrderByDescending(c => c.Rank)
-                                   .Take(need).ToHashSet();
-                var cands = legal.Where(c => !reserved.Contains(c)).ToList();
-                if (cands.Count > 0)
-                {
-                    // Rezerv dururken garanti GÖNÜLLÜ bozulmaz. Kaçış pahalı olsa bile
-                    // yükü öne sür: %40'lık istemsiz kazanma riski, %100'lük garantiyi
-                    // erken yakıp sonda mecburi fazla el almaktan her zaman iyidir.
-                    double minD = cands.Min(c => pw[c]);
-                    var dmp = cands.Where(c => pw[c] <= minD + dumpBandOf(surplus))
-                                   .OrderByDescending(c => RiskValue(c, trump)).First();
-                    reason = minD < 0.25
-                        ? $"koz garantim cepte ({need} el), bu eli pas geçip yük atıyorum (%{pw[dmp] * 100:F0})"
-                        : $"garanti sona saklı, bombayı ateşe sürüyorum (%{pw[dmp] * 100:F0} istemsiz alma riski)";
-                    return dmp;
-                }
-                // Elde yalnız rezerv kaldı: garantiden oyna (mecburen kazanır, ihtiyaç düşer)
-                var cashR = legal.OrderBy(c => c.Rank).First();
-                reason = $"elde yalnız garantiler kaldı, bozduruyorum (ihtiyaç {need})";
-                return cashR;
-            }
-
-            // Koz yönetimi (açışta): elim tamamen kozsa büyükten gitmek rakip kozlarını eritir,
-            // küçük kozum sona istemsiz kazanan kalır. İhtiyaç < kart sayısıysa kaybedilecek eli
-            // BAŞTAN kaybet: en küçük kozu sür. İhtiyaç = kart sayısıysa süpür: tepeden in.
-            if (need > 0 && leading && trump.HasValue && hand.All(c => c.Suit == trump.Value))
-            {
-                if (need >= hand.Count)
-                {
-                    var sweep = legal.OrderByDescending(c => c.Rank).First();
-                    reason = $"hepsi lazım, tepeden süpürüyorum (ihtiyaç {need}/{hand.Count})";
-                    return sweep;
-                }
-                var low = legal.OrderBy(c => c.Rank).First();
-                reason = $"fazla eli erkenden kaybetmeye çalışıyorum — küçük kozu sürdüm (%{pw[low] * 100:F0} yine de alır)";
-                return low;
-            }
-
-            if (need > 0)
-            {
-                double best = pw.Values.Max();
-                // El kıtlığında bekleme lüksü yok: eşiği düşür, fırsatı erken yakala
-                double confidence = surplus < 0 ? 0.48 : 0.55;
-
-                if (best >= confidence)
-                {
-                    // Yüksek şanslı bandın içinden: önce ERİYEN kazananlar (yan renk), sağlamlar sona;
-                    // eşitse en ucuzu.
-                    var band = legal.Where(c => pw[c] >= best - 0.08)
-                                    .OrderBy(c => IsStableBank(c) ? 1 : 0)
-                                    .ThenBy(c => c.Rank).First();
-                    reason = IsStableBank(band)
-                        ? $"%{pw[band] * 100:F0} alır (ihtiyaç {need})"
-                        : $"%{pw[band] * 100:F0} alır — eriyen kazananı erken bozduruyorum (ihtiyaç {need})";
-                    return band;
-                }
-                if (!leading && best > 0 && best >= 0.30)
-                {
-                    var pick = legal.OrderByDescending(c => pw[c]).First();
-                    reason = $"riskli ama deniyorum: %{pw[pick] * 100:F0} (ihtiyaç {need})";
-                    return pick;
-                }
-                var save = legal.OrderBy(c => pw[c]).ThenBy(c => c.Rank).First();
-                reason = leading
-                    ? $"elimde güvenli açış yok (en iyi %{best * 100:F0}), küçükle açıyorum"
-                    : $"bu el alınmaz (en iyi %{best * 100:F0}), küçüğü verdim";
-                return save;
-            }
-
-            // İhtiyaç yok / batmış: alma olasılığını MİNİMİZE et; eşitler arasında en riskli yükü at.
-            // Masada fazla el varsa tehlike büyük (sahipsiz eller dolaşıyor) → boşaltma bandını genişlet,
-            // büyük kartları eritmeye daha erken davran.
-            double min = pw.Values.Min();
-            var dumps = legal.Where(c => pw[c] <= min + dumpBandOf(surplus)).ToList();
-            if (min >= 0.65)
-            {
-                // Kaçış yok, mecburen alıyorum: en büyüğü yak
-                var burn = legal.OrderByDescending(c => c.Rank).First();
-                reason = $"kaçamıyorum (%{pw[burn] * 100:F0} alır), en büyüğü yaktım";
-                return burn;
-            }
-            var dump = dumps.OrderByDescending(c => RiskValue(c, trump)).First();
-            string ctx = surplus > 0 ? $" (masada {surplus} sahipsiz el var, acele ediyorum)" : "";
-            reason = need == 0
-                ? $"ihalem doldu, %{pw[dump] * 100:F0} riskle yük boşaltıyorum{ctx}"
-                : $"battım, yük boşaltıyorum (%{pw[dump] * 100:F0}){ctx}";
-            return dump;
-        }
-
-        private static double dumpBandOf(int surplus) => surplus > 0 ? 0.13 : 0.05;
-
-        private static int RiskValue(Card c, Suit? trump)
-        {
-            int v = (int)c.Rank * 2;
-            if (trump.HasValue && c.Suit == trump.Value) v -= 3;
-            return v;
-        }
-    }
 }

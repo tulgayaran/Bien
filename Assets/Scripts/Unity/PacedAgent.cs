@@ -11,6 +11,9 @@ namespace Bien.Unity
     /// Gözlemci olaylarını içerideki ajana iletir (AI hafızası beslenmeli).</summary>
     public class PacedAgent : IPlayerAgent, IGameObserver
     {
+        /// <summary>Undo tekrar oynatması: kapılar ve düşünme gecikmeleri atlanır.</summary>
+        public static bool FastMode;
+
         private readonly IPlayerAgent _inner;
         private readonly IGameObserver _innerObs;
         private readonly Func<Task> _gate;
@@ -28,23 +31,20 @@ namespace Bien.Unity
         public async Task<int> MakeBidAsync(int seat, IReadOnlyList<Card> hand, RoundConfig round, Suit? trump,
                                             IReadOnlyList<int?> bidsSoFar, int? forbidden)
         {
-            await _gate();
-            if (_thinkMs > 0) await Task.Delay(_thinkMs);
+            if (!FastMode) { await _gate(); if (_thinkMs > 0) await Task.Delay(_thinkMs); }
             return await _inner.MakeBidAsync(seat, hand, round, trump, bidsSoFar, forbidden);
         }
 
         public async Task<int?> OfferBidRevisionAsync(int seat, IReadOnlyList<Card> hand, RoundConfig round, Suit? trump,
                                                       IReadOnlyList<int?> currentBids, int dealerDesiredBid)
         {
-            await _gate();
-            if (_thinkMs > 0) await Task.Delay(_thinkMs);
+            if (!FastMode) { await _gate(); if (_thinkMs > 0) await Task.Delay(_thinkMs); }
             return await _inner.OfferBidRevisionAsync(seat, hand, round, trump, currentBids, dealerDesiredBid);
         }
 
         public async Task<Card> PlayCardAsync(int seat, IReadOnlyList<Card> hand, TrickState trick, RoundConfig round, Suit? trump)
         {
-            await _gate();
-            if (_thinkMs > 0) await Task.Delay(_thinkMs);
+            if (!FastMode) { await _gate(); if (_thinkMs > 0) await Task.Delay(_thinkMs); }
             return await _inner.PlayCardAsync(seat, hand, trick, round, trump);
         }
     }

@@ -13,7 +13,7 @@ namespace Bien.Core.AI
     ///  D2  Takip, altına kaçış mümkün: altta kalanların EN BÜYÜĞÜNÜ ver (yükü ucuza erit).
     ///  D3  Takip, mecburen üstteyim: en büyüğü yak (madem alıyorum, bombayı öldür).
     ///  D4a Koz mecburi, masada beni geçen koz var: altta kalan kozların en büyüğünü ver.
-    ///  D4b Koz mecburi, mecburen alıyorum: EN KÜÇÜK kozu ver (büyük koz ileride bir el daha almaya mahkûm).
+    ///  D4b Koz mecburi, mecburen alıyorum: BÜYÜĞÜ yak (ileride bir el daha almaya mahkûmdu — D3 tutarlı).
     ///  D5  Serbest atış (renk+koz yok): en tehlikeli kartı boşalt.
     ///  D6  Eş-tehlike kırılımı: kısa renkten olanı at (renk boşalt → serbest atış hakkı kazan).
     /// </summary>
@@ -85,10 +85,11 @@ namespace Bien.Core.AI
                     reason = $"D4a: koz mecburi ama altta kalıyorum — büyük kozu eritiyorum";
                     return pick;
                 }
-                // ---- D4b: mecburen alıyorum ----
-                var small = legal.OrderBy(c => c.Rank).First();
-                reason = $"D4b: koz mecburi ve alıyorum — en küçük kozla (büyüğü bir el daha alırdı)";
-                return small;
+                // ---- D4b: mecburen alıyorum → en tehlikeli büyüğü yak (D3 ile tutarlı:
+                // büyük koz ileride bir el daha almaya mahkûmdu, madem alıyorum onu öldüreyim) ----
+                var big = legal.OrderByDescending(c => c.Rank).First();
+                reason = "D4b: koz mecburi ve alıyorum — büyüğü yakıyorum, tehlike azalsın";
+                return big;
             }
 
             // ---- D5 (+D6 kırılımı): serbest atış ----
