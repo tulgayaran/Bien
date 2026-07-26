@@ -1,27 +1,87 @@
-================ OYUN — 2026-07-22 03:23:58 ================
+================ OYUN — 2026-07-27 02:49:18 ================
 Masa: BATI=Hard KUZEY=Easy DOĞU=Hard
 Masa kuruldu → BATI=Hard  KUZEY=Easy  DOĞU=Hard
 
---- TUR 1/16 · 1 kart · kozlu · dağıtan BATI ---
-KUZEY: İHALE 1 ← çözücü (300 dünya): P(0)=%84, P(1)=%16
-KUZEY: PLAN: W0 S0 L1 | W:[] S:[] L:[♠5] | mod: Balanced
-DOĞU: İHALE 1 ← çözücü (300 dünya): P(0)=%24, P(1)=%76
-DOĞU: PLAN: W0 S1 L0 | W:[] S:[♦9] L:[] | mod: Balanced
-BATI: İHALE 0 ← çözücü (300 dünya): P(0)=%86, P(1)=%14
-BATI: PLAN: W1 S0 L0 | W:[♣A] S:[] L:[] | mod: Balanced
-KUZEY:   PLAN ♠5: Loser→Swing (açık — zoraki terfi)
-KUZEY:   PLAN ♠5: Swing→Winner (açık: 0.5 < ihtiyaç 1)
-KUZEY: ♠5 [Winner, mod Balanced] — B0: tek geçerli kart
-DOĞU:   PLAN ♦9: Swing→Winner (açık: 0.5 < ihtiyaç 1)
-DOĞU: ♦9 [Winner, mod Balanced] — B0: tek geçerli kart
-BATI:   PLAN ♣A: Winner→Loser (ihtiyaç bitti, her kart yük)
+--- TUR 1/16 · 1 kart · kozlu · dağıtan KUZEY ---
+DOĞU: İHALE 0 ← çözücü (300 dünya): P(0)=%79, P(1)=%21
+DOĞU: PLAN: W0 S0 L1 | W:[] S:[] L:[♠6] | mod: Balanced
+BATI: İHALE 1 ← çözücü (300 dünya): P(0)=%31, P(1)=%69
+BATI: PLAN: W0 S1 L0 | W:[] S:[♣7] L:[] | mod: Balanced
+KUZEY: İHALE 0 ← çözücü (300 dünya): P(0)=%94, P(1)=%6
+KUZEY: PLAN: W0 S0 L1 | W:[] S:[] L:[♦9] | mod: Balanced
+DOĞU:   PLAN mod: Balanced→Ducking [T1: hedef tamam → temiz kaçış]
+DOĞU: ♠6 [Loser, mod Ducking] — D0: tek geçerli kart
+BATI:   PLAN ♣7: Swing→Winner (açık: 0.5 < ihtiyaç 1)
+BATI: ♣7 [Winner, mod Balanced] — B0: tek geçerli kart
+KUZEY:   PLAN mod: Balanced→Ducking [T1: hedef tamam → temiz kaçış]
+KUZEY: ♦9 [Loser, mod Ducking] — D0: tek geçerli kart
+SONUÇ SEN: ihale 0, aldı 0 → +10
+SONUÇ BATI: ihale 1, aldı 1 → +11
+SONUÇ KUZEY: ihale 0, aldı 0 → +10
+SONUÇ DOĞU: ihale 0, aldı 0 → +10
+
+--- TUR 2/16 · 2 kart · kozlu · dağıtan DOĞU ---
+BATI: İHALE 0 ← çözücü (350 dünya): P(0)=%87, P(1)=%6, P(2)=%0
+BATI: PLAN: W0 S0 L2 | W:[] S:[] L:[♣8 ♥8] | mod: Balanced
+KUZEY: İHALE 0 ← çözücü (350 dünya): P(0)=%77, P(1)=%16, P(2)=%0
+KUZEY: PLAN: W0 S1 L1 | W:[] S:[♥K] L:[♣2] | mod: Balanced
+DOĞU: İHALE 1 ← çözücü (350 dünya): P(0)=%26, P(1)=%31, P(2)=%3
+DOĞU: PLAN: W0 S1 L1 | W:[] S:[♠8] L:[♥4] | mod: Balanced
 BATI:   PLAN mod: Balanced→Ducking [T1: hedef tamam → temiz kaçış]
-BATI: ♣A [Loser, mod Ducking] — D0: tek geçerli kart
-SONUÇ SEN: ihale 1, aldı 0 → BATTI
+BATI: ♣8 [Loser, mod Ducking] — D0: tek geçerli kart
+KUZEY:   PLAN ♥K: Swing→Loser (ihtiyaç bitti, her kart yük)
+KUZEY:   PLAN mod: Balanced→Ducking [T1: hedef tamam → temiz kaçış]
+KUZEY: ♣2 [Loser, mod Ducking] — D0: tek geçerli kart
+DOĞU:   PLAN ♠8: Swing→Winner (açık: 0.5 < ihtiyaç 1)
+DOĞU: ♠8 [Winner, mod Balanced] — B0: tek geçerli kart
+DOĞU:   PLAN mod: Balanced→Ducking [T1: hedef tamam → temiz kaçış]
+DOĞU: ♥4 [Loser, mod Ducking] — D0: tek geçerli kart
+BATI: ♥8 [Loser, mod Ducking] — D0: tek geçerli kart
+KUZEY: ♥K [Loser, mod Ducking] — D0: tek geçerli kart
+SONUÇ SEN: ihale 1, aldı 1 → +11
 SONUÇ BATI: ihale 0, aldı 0 → +10
-SONUÇ KUZEY: ihale 1, aldı 0 → BATTI
+SONUÇ KUZEY: ihale 0, aldı 0 → +10
 SONUÇ DOĞU: ihale 1, aldı 1 → +11
 
---- TUR 2/16 · 2 kart · kozlu · dağıtan KUZEY ---
-DOĞU: İHALE 0 ← çözücü (350 dünya): P(0)=%72, P(1)=%28, P(2)=%6
-DOĞU: PLAN: W0 S1 L1 | W:[] S:[♠K] L:[♦8] | mod: Balanced
+--- TUR 3/16 · 3 kart · kozlu · dağıtan SEN ---
+BATI: İHALE 1 ← çözücü (160 dünya): P(0)=%54, P(1)=%54, P(2)=%18, P(3)=%0
+BATI: PLAN: W0 S1 L2 | W:[] S:[♠Q] L:[♥8 ♣2] | mod: Balanced
+KUZEY: İHALE 0 ← çözücü (160 dünya): P(0)=%81, P(1)=%8, P(2)=%0, P(3)=%0
+KUZEY: PLAN: W0 S0 L3 | W:[] S:[] L:[♠4 ♦10 ♠3] | mod: Balanced
+DOĞU: İHALE 1 ← çözücü (160 dünya): P(0)=%2, P(1)=%34, P(2)=%13, P(3)=%0
+DOĞU: PLAN: W1 S1 L1 | W:[♣K] S:[♦J] L:[♥2] | mod: Balanced
+BATI:   PLAN ♠Q: Swing→Winner (açık: 0.5 < ihtiyaç 1)
+BATI: ♠Q [Winner, mod Balanced] — B1: eriyen Winner bekletilmez — bozduruyorum
+KUZEY:   PLAN mod: Balanced→Ducking [T1: hedef tamam → temiz kaçış]
+KUZEY: ♠3 — dalgınlık, plansız attım
+DOĞU:   PLAN ♣K: Winner→Swing (formül fazlası: 1.5 > ihtiyaç 1)
+DOĞU: ♣K [Swing, mod Balanced] — B0: tek geçerli kart
+DOĞU:   PLAN ♦J: Swing→Loser (ihtiyaç bitti, her kart yük)
+DOĞU:   PLAN mod: Balanced→Ducking [T1: hedef tamam → temiz kaçış]
+DOĞU: ♥2 [Loser, mod Ducking] — D1: kaybetmek için açıyorum (%89 almaz, 1./2 aday)
+BATI:   PLAN ♥8: Loser→Swing (açık — zoraki terfi)
+BATI:   PLAN ♥8: Swing→Winner (açık: 0.5 < ihtiyaç 1)
+BATI: ♥8 [Winner, mod Balanced] — B0: tek geçerli kart
+KUZEY: ♦10 [Loser, mod Ducking] — D5: serbest atış — en tehlikeli yük (%21 ileride alırdı, 1./2 aday)
+BATI:   PLAN ♣2: Loser→Swing (açık — zoraki terfi)
+BATI:   PLAN ♣2: Swing→Winner (açık: 0.5 < ihtiyaç 1)
+BATI: ♣2 [Winner, mod Balanced] — B0: tek geçerli kart
+KUZEY: ♠4 [Loser, mod Ducking] — D0: tek geçerli kart
+DOĞU: ♦J [Loser, mod Ducking] — D0: tek geçerli kart
+SONUÇ SEN: ihale 2, aldı 1 → BATTI
+SONUÇ BATI: ihale 1, aldı 1 → +11
+SONUÇ KUZEY: ihale 0, aldı 0 → +10
+SONUÇ DOĞU: ihale 1, aldı 1 → +11
+
+--- TUR 4/16 · 4 kart · kozlu · dağıtan BATI ---
+KUZEY: İHALE 1 ← çözücü (110 dünya): P(0)=%35, P(1)=%36, P(2)=%20, P(3)=%6, P(4)=%0
+KUZEY: PLAN: W0 S2 L2 | W:[] S:[♥J ♠J] L:[♥7 ♣5] | mod: Balanced
+DOĞU: İHALE 2 ← çözücü (110 dünya): P(0)=%6, P(1)=%20, P(2)=%24, P(3)=%0, P(4)=%0
+DOĞU: PLAN: W0 S1 L3 | W:[] S:[♣9] L:[♠3 ♥4 ♣6] | mod: Balanced
+BATI: İHALE 0 ← çözücü (110 dünya): P(0)=%95, P(1)=%10, P(2)=%1, P(3)=%0, P(4)=%0
+BATI: PLAN: W0 S1 L3 | W:[] S:[♦K] L:[♦2 ♥6 ♦5] | mod: Balanced
+KUZEY: ♥7 [Loser, mod Balanced] — B2: kaybı baştan yaşıyorum (%87 almaz, tek aday)
+DOĞU:   PLAN ♣9: Swing→Winner (açık: 0.5 < ihtiyaç 2)
+DOĞU:   PLAN ♣6: Loser→Swing (açık — zoraki terfi)
+DOĞU:   PLAN ♣6: Swing→Winner (açık: 1.5 < ihtiyaç 2)
+DOĞU: ♥4 [Loser, mod Balanced] — B0: tek geçerli kart

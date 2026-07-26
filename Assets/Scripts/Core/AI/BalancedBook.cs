@@ -5,66 +5,63 @@ using System.Linq;
 namespace Bien.Core.AI
 {
     /// <summary>
-    /// BALANCED KURAL KİTABI — yaşayan liste. Ateş gücü ≈ ihtiyaç: plan ZAMANLAMAYLA icra edilir.
-    ///
-    /// v1 (2026-07):
-    ///  B1   Açış: eriyen Winner (yan renk boss'u) önce bozdurulur — değer kaybı geri gelmez.
-    ///  B2   Açış: Winner'lar dayanıklıysa kaybedilecek eli BAŞTAN kaybet — en riskli Loser'ı
-    ///       ateşe sür (çakılırsa yük gitti; almazsa zaten alacaktı).
-    ///  B3   Açış: elde yalnız dayanıklı Winner kaldıysa tepeden kapat.
-    ///  B4   Takip: Winner işbaşında — güvenliyse (son söz / sökülmez) en ucuz kazanan.
-    ///  B4b  Takip: Swing FIRSATI — bedava kazanıyorsa VE tenzil edilecek Winner varsa al
-    ///       (formül: +0.5 fazla, W→S tenzili −0.5 → denklem kapanır). Winner yoksa DOKUNMA.
-    ///  B5   Takip: almayacağım/alamayacağım el — altta kalanların en büyüğüyle kaç (Loser erit);
-    ///       kaçış yoksa mecburen en ucuz kazanan.
-    ///  B6   Koz mecburi: kazanıyorsam EN KÜÇÜK kazanan koz; üstüm varsa büyük altta-kalanı erit.
-    ///  B7   Serbest atış: en tehlikeli Loser; Loser yoksa en zayıf Swing.
+    /// BALANCED KURAL KİTABI — amaç-olasılık mimarisi. Plan zamanlamayla İCRA edilir.
+    ///  B1  Açış: eriyen Winner bekletilmez (deterministik).
+    ///  B2  Açış: kaybedilecek eli baştan kaybet — KAYBET amacı, P(almaz) en yüksek (koz hariç).
+    ///  B3  Açış: elde yalnız Winner → tepeden.
+    ///  B4  Takip: güvenli Winner — AL amacı; B4b bedava Swing (takaslık Winner şartıyla).
+    ///  B5  Takip, planda yok: ERİT — altta kalanlardan gelecekte en tehlikelisi.
+    ///  B6  Koz mecburi: alıyorsam SÖKÜLMEZİ harca (tehlike puanı en yüksek); üstüm varsa erit.
+    ///  B7  Serbest atış: en tehlikeli Loser.
     /// </summary>
     public static class BalancedBook
     {
         public static Card Decide(int seat, IReadOnlyList<Card> hand, TrickState trick, Suit? trump,
-                                  GameMemory mem, HandPlan plan, Random rng, out string reason)
+                                  GameMemory mem, HandPlan plan, SkillTier tier, Random rng, out string reason)
         {
             var legal = GameRules.LegalPlays(hand, trick.LedSuit, trump);
             if (legal.Count == 1) { reason = "B0: tek geçerli kart"; return legal[0]; }
 
-            bool Durable(Card c) => mem.IsBoss(c, hand) && (!trump.HasValue || c.Suit == trump.Value);
-            bool Decaying(Card c) => mem.IsBoss(c, hand) && trump.HasValue && c.Suit != trump.Value;
+            List<(Card, double)> Score(IEnumerable<Card> set, Func<Card, double> goal)
+                => set.Select(c => (c, goal(c))).ToList();
+            Func<Card, double> winNow = c => GoalPicker.WinNow(c, hand, trick, trump, mem, seat);
+            Func<Card, double> danger = c => GoalPicker.FutureDanger(c, hand, trump, mem);
 
-            double Danger(Card c)
+            bool IsBossSafe(Card c)
             {
-                double d = (int)c.Rank / 14.0;
-                if (mem.IsBoss(c, hand)) d += 0.60;
-                if (trump.HasValue && c.Suit == trump.Value) d += 0.35;
-                return d;
+                if (!mem.IsBoss(c, hand)) return false;
+                if (!trump.HasValue || c.Suit == trump.Value) return true;
+                for (int s = 0; s < 4; s++) if (mem.IsVoid(s, c.Suit)) return false;
+                return true;
             }
 
             // ---- Açış ----
             if (trick.Cards.Count == 0)
             {
-                var melting = legal.Where(Decaying).ToList();
-                if (melting.Count > 0)
+                var decaying = legal.Where(c => plan.RoleOf(c) == CardRole.Winner &&
+                                                trump.HasValue && c.Suit != trump.Value).ToList();
+                if (decaying.Count > 0)
                 {
-                    var pick = melting.OrderByDescending(c => c.Rank).First();
-                    reason = "B1: eriyen Winner'ı çakılmadan bozduruyorum";
+                    var pick = decaying.OrderByDescending(c => c.Rank).First();
+                    reason = "B1: eriyen Winner bekletilmez — bozduruyorum";
                     return pick;
+                }
+                if (hand.All(c => plan.RoleOf(c) == CardRole.Winner))
+                {
+                    var top = legal.OrderByDescending(c => c.Rank).First();
+                    reason = "B3: elde yalnız Winner — tepeden kapatıyorum";
+                    return top;
                 }
                 var losers = legal.Where(c => plan.RoleOf(c) == CardRole.Loser).ToList();
-                if (losers.Count > 0)
-                {
-                    var pick = losers.OrderByDescending(Danger).First();
-                    reason = "B2: planlı kayıp — en riskli Loser'ı ateşe sürüyorum";
-                    return pick;
-                }
-                if (legal.All(Durable))
-                {
-                    var pick = legal.OrderByDescending(c => c.Rank).First();
-                    reason = "B3: elde yalnız dayanıklı Winner — tepeden kapatıyorum";
-                    return pick;
-                }
-                var probe = legal.OrderBy(c => c.Rank).First();
-                reason = "B2b: Swing'lerle bekliyorum — en küçükle yokluyorum";
-                return probe;
+                var pool = losers.Count > 0 ? losers
+                         : legal.Where(c => plan.RoleOf(c) == CardRole.Swing).ToList();
+                // Koz kayıp yakıtı olmaz: yan aday varsa kozlar havuzdan çıkar
+                if (trump.HasValue && pool.Any(c => c.Suit != trump.Value))
+                    pool = pool.Where(c => c.Suit != trump.Value).ToList();
+                var lead = GoalPicker.Pick(Score(pool, c => GoalPicker.LoseNow(c, hand, trick, trump, mem, seat)),
+                                           tier, rng, out double p, out string bn);
+                reason = $"B2: kaybı baştan yaşıyorum (%{p * 100:F0} almaz, {bn})";
+                return lead;
             }
 
             var ledSuit = trick.Cards[0].Suit;
@@ -74,14 +71,8 @@ namespace Bien.Core.AI
                 var t = new List<Card>(trick.Cards) { c };
                 return GameRules.TrickWinnerOffset(t, ledSuit, trump) == t.Count - 1;
             }
-            bool SafeWin(Card c) => playersAfter == 0 ||
-                                    (mem.IsBoss(c, hand) &&
-                                     (!trump.HasValue || c.Suit == trump.Value ||
-                                      !Enumerable.Range(0, 4).Any(s => mem.IsVoid(s, ledSuit))));
-
             var winning = legal.Where(WinsNow).ToList();
             var losing = legal.Where(c => !WinsNow(c)).ToList();
-
             bool forcedTrump = trump.HasValue && !hand.Any(h => h.Suit == ledSuit)
                                               && legal.All(c => c.Suit == trump.Value);
             bool freeDiscard = !forcedTrump && legal[0].Suit != ledSuit;
@@ -90,74 +81,66 @@ namespace Bien.Core.AI
             {
                 if (winning.Count > 0)
                 {
-                    var pick = winning.OrderBy(c => c.Rank).First();
-                    reason = "B6: koz mecburi ve alıyorum — en küçük kazanan kozla";
+                    // Mecburen alıyorum → sökülmezi harca: tehlike puanı EN YÜKSEK kazanan
+                    var pick = GoalPicker.Pick(Score(winning, danger), tier, rng, out double p, out string bn);
+                    reason = $"B6: koz mecburi — sökülmezle alıyorum, yedirilebilir kalsın ({bn})";
                     return pick;
                 }
-                var melt = legal.OrderByDescending(c => c.Rank).First();
-                reason = "B6: koz mecburi, üstüm var — büyük kozu eritiyorum";
-                return melt;
+                var sac = GoalPicker.Pick(Score(losing, danger), tier, rng, out double p2, out string bn2);
+                reason = $"B6: koz mecburi ama üstüm var — tehlikeli kozu eritiyorum ({bn2})";
+                return sac;
             }
 
             if (freeDiscard)
             {
                 var losers = legal.Where(c => plan.RoleOf(c) == CardRole.Loser).ToList();
-                if (losers.Count > 0)
+                var pool = losers.Count > 0 ? losers : legal;
+                if (losers.Count == 0)
                 {
-                    var pick = losers.OrderByDescending(Danger).First();
-                    reason = "B7: serbest atış — en tehlikeli Loser'ı boşaltıyorum";
-                    return pick;
+                    var weak = GoalPicker.Pick(Score(legal, c => 1.0 - GoalPicker.FutureDanger(c, hand, trump, mem)),
+                                               tier, rng, out double pw, out string bnw);
+                    reason = $"B7: Loser yok — en zayıf gidiyor ({bnw})";
+                    return weak;
                 }
-                var weak = legal.OrderBy(c => TableAgent.CardPoints(c, trump, mem.Round.CardsPerPlayer)).First();
-                reason = "B7: Loser kalmadı — en zayıf Swing'i veriyorum";
-                return weak;
+                var dump = GoalPicker.Pick(Score(pool, danger), tier, rng, out double p3, out string bn3);
+                reason = $"B7: en tehlikeli Loser'ı boşaltıyorum (%{p3 * 100:F0}, {bn3})";
+                return dump;
             }
 
-            // ---- Renk takibi ----
-            int need = plan.TargetTricks - mem.TricksWon[seat];
-            bool swingsAreWorking = plan.Winners < need; // ihtiyaç Swing'lere yaslanıyor:
-                                                         // Swing kazançları fırsat değil PLANIN KENDİSİ
             if (winning.Count > 0)
             {
-                // B4: planlı işçiler (Winner'lar + ihtiyaç yaslanıyorsa Swing'ler) güvenli kazanç
-                var working = winning.Where(c => SafeWin(c) &&
-                        (plan.RoleOf(c) == CardRole.Winner ||
-                         (swingsAreWorking && plan.RoleOf(c) == CardRole.Swing))).ToList();
-                if (working.Count > 0)
+                var winners = winning.Where(c => plan.RoleOf(c) == CardRole.Winner)
+                                     .Where(c => playersAfter == 0 || IsBossSafe(c)).ToList();
+                if (winners.Count > 0)
                 {
-                    var pick = working.OrderBy(c => c.Rank).First();
-                    reason = "B4: planlı kart işbaşında — en ucuz güvenli kazanan";
+                    // Harcama sırası: en çok ERİYECEK Winner önce (dayanıklı koz boss'u bekler)
+                    var pick = GoalPicker.Pick(
+                        Score(winners, c => GoalPicker.DecayRisk(c, hand, trump, mem)),
+                        tier, rng, out double p, out string bn);
+                    reason = $"B4: planlı el — eriyen Winner'la alıyorum ({bn})";
                     return pick;
                 }
-
-                // B4b: Swing FIRSATI (W ≥ ihtiyaçken bedava el) — tenzil edilecek Winner şart
-                var swingFree = winning.Where(c => plan.RoleOf(c) == CardRole.Swing && SafeWin(c)).ToList();
-                if (!swingsAreWorking && swingFree.Count > 0 && plan.Winners >= 1)
+                if (playersAfter == 0 && plan.Winners >= 1)
                 {
-                    var pick = swingFree.OrderBy(c => c.Rank).First();
-                    reason = "B4b: bedava Swing fırsatı — alıyorum, bir Winner tenzil edilecek";
-                    return pick;
-                }
-
-                // B4c: güvenli kazanan yok ama el plana lazım — Loser olmayan en büyükle bastır
-                var press = winning.Where(c => plan.RoleOf(c) != CardRole.Loser)
-                                   .OrderByDescending(c => c.Rank).ToList();
-                if (need > 0 && press.Count > 0 && playersAfter > 0)
-                {
-                    reason = $"B4c: garanti yok ama el lazım — en büyükle bastırıyorum (arkada {playersAfter})";
-                    return press.First();
+                    var swings = winning.Where(c => plan.RoleOf(c) == CardRole.Swing).ToList();
+                    if (swings.Count > 0)
+                    {
+                        var pick = swings.OrderBy(c => c.Rank).First();
+                        reason = "B4b: bedava Swing eli — Winner'ı Swing'e çevirip kadroyu güçlendiriyorum";
+                        return pick;
+                    }
                 }
             }
 
-            // B5: kaç — altta kalanların en büyüğü; kaçış yoksa mecburen en ucuz kazanan
             if (losing.Count > 0)
             {
-                var pick = losing.OrderByDescending(c => c.Rank).First();
-                reason = "B5: bu eli plana almıyorum — altta kalanların en büyüğüyle kaçıyorum";
+                var pick = GoalPicker.Pick(Score(losing, danger), tier, rng, out double p4, out string bn4);
+                reason = $"B5: planda yok — altına kaçıp tehlikeliyi eritiyorum (%{p4 * 100:F0}, {bn4})";
                 return pick;
             }
-            var forced = winning.OrderBy(c => c.Rank).First();
-            reason = "B5b: kaçış yok — mecburen en ucuz kazananla alıyorum";
+
+            var forced = GoalPicker.Pick(Score(winning, danger), tier, rng, out double p5, out string bn5);
+            reason = $"B5b: kaçış yok — sökülmezle alıyorum, dengeleme emecek ({bn5})";
             return forced;
         }
     }

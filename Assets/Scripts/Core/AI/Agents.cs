@@ -23,11 +23,15 @@ namespace Bien.Core.AI
         protected readonly GameMemory Mem = new();
         private readonly double _devProb, _devMag, _sloppyPlay;
 
-        public TableAgent(Random rng, double attention, double devProb, double devMag, double sloppyPlay)
+        private readonly SkillTier _tier;
+
+        public TableAgent(Random rng, double attention, double devProb, double devMag, double sloppyPlay,
+                          SkillTier tier = SkillTier.Hard)
         {
             Rng = rng;
             Mem.Attention = attention;
             _devProb = devProb; _devMag = devMag; _sloppyPlay = sloppyPlay;
+            _tier = tier;
         }
 
         // ---- IGameObserver ----
@@ -96,9 +100,9 @@ namespace Bien.Core.AI
 
             // KÜÇÜK TURLAR (≤3 kart): kesin çözücü — dünyaları örnekle, minimax bandından
             // P(b tutar) çıkar, EV maksimize et. Puan merdiveni yerine gerçek olasılık.
-            if (n <= 3)
+            if (n <= 4)
             {
-                int worlds = n == 1 ? 300 : n == 2 ? 350 : 130;
+                int worlds = n == 1 ? 300 : n == 2 ? 350 : n == 3 ? 160 : 110;
                 int leaderSeat = (Mem.DealerSeat + 1) % 4;
                 var pMake = ExactSolver.MakeProbabilities(hand, seat, trump, Mem.TrumpCard,
                                                           leaderSeat, Rng, worlds);
@@ -234,13 +238,13 @@ namespace Bien.Core.AI
             // Üç mod, üç kitap — icra tamamen kural kitaplarında
             if (Plan == null)
                 card = BalancedBook.Decide(seat, hand, trick, trump, Mem,
-                        HandPlan.Build(hand, trump, round.CardsPerPlayer), Rng, out reason); // emniyet
+                        HandPlan.Build(hand, trump, round.CardsPerPlayer), _tier, Rng, out reason); // emniyet
             else if (Plan.Stance == PlayerStance.Ducking)
-                card = DuckingBook.Decide(hand, trick, trump, Mem, Rng, out reason);
+                card = DuckingBook.Decide(seat, hand, trick, trump, Mem, _tier, Rng, out reason);
             else if (Plan.Stance == PlayerStance.Hunting)
-                card = HuntingBook.Decide(seat, hand, trick, trump, Mem, Plan, Rng, out reason);
+                card = HuntingBook.Decide(seat, hand, trick, trump, Mem, Plan, _tier, Rng, out reason);
             else
-                card = BalancedBook.Decide(seat, hand, trick, trump, Mem, Plan, Rng, out reason);
+                card = BalancedBook.Decide(seat, hand, trick, trump, Mem, Plan, _tier, Rng, out reason);
             Debug?.Invoke($"{card} [{Plan?.RoleOf(card)}, mod {Plan?.Stance}] — {reason}");
             return Task.FromResult(card);
         }
@@ -249,19 +253,19 @@ namespace Bien.Core.AI
     public sealed class EasyAgent : TableAgent
     {
         public EasyAgent(Random rng)
-            : base(rng, attention: 0.20, devProb: 0.50, devMag: 0.20, sloppyPlay: 0.35) { }
+            : base(rng, attention: 0.20, devProb: 0.50, devMag: 0.20, sloppyPlay: 0.15, SkillTier.Easy) { }
     }
 
     public sealed class NormalAgent : TableAgent
     {
         public NormalAgent(Random rng)
-            : base(rng, attention: 0.50, devProb: 0.30, devMag: 0.10, sloppyPlay: 0.06) { }
+            : base(rng, attention: 0.50, devProb: 0.30, devMag: 0.10, sloppyPlay: 0.03, SkillTier.Normal) { }
     }
 
     public sealed class HardAgent : TableAgent
     {
         public HardAgent(Random rng)
-            : base(rng, attention: 1.00, devProb: 0.0, devMag: 0.0, sloppyPlay: 0.0) { }
+            : base(rng, attention: 1.00, devProb: 0.0, devMag: 0.0, sloppyPlay: 0.0, SkillTier.Hard) { }
     }
 
 }
