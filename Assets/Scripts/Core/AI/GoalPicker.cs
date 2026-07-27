@@ -18,10 +18,19 @@ namespace Bien.Core.AI
     /// </summary>
     public static class GoalPicker
     {
+        /// <param name="tieValue">Eşit olasılıkta ikincil anahtar: yükseği önde. Örn. AL amacında
+        /// keepValue verilir → hepsi kaybediyorsa (P=0 eşitliği) EN UCUZ kart harcanır; verilmezse
+        /// eşitlik sıralaması tanımsızdı ve H8 umutsuz elde en değerli kozu yakabiliyordu (Tulga vakası).</param>
         public static Card Pick(List<(Card card, double p)> scored, SkillTier tier, Random rng,
-                                out double chosenP, out string bandNote)
+                                out double chosenP, out string bandNote,
+                                Func<Card, double> tieValue = null)
         {
-            scored.Sort((a, b) => b.p.CompareTo(a.p));
+            scored.Sort((a, b) =>
+            {
+                int c = b.p.CompareTo(a.p);
+                if (c != 0 || tieValue == null) return c;
+                return tieValue(b.card).CompareTo(tieValue(a.card));
+            });
             int n = scored.Count;
             int lo, hi; // dahil aralık (0 tabanlı)
             switch (tier)

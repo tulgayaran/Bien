@@ -178,7 +178,8 @@ namespace Bien.Core.AI
             {
                 var parts = hand.OrderByDescending(c => CardPoints(c, trump, n))
                                 .Select(c => $"{c} {CardPoints(c, trump, n):F2}");
-                string msg = $"İHALE {bid} ← {string.Join(" ", parts)} | W+S/2 = {Plan.Winners}+{Plan.Swings}/2 = {raw:F1}";
+                string lb = Plan.LengthBonus > 0 ? $" + uzunluk {Plan.LengthBonus:F1}" : "";
+                string msg = $"İHALE {bid} ← {string.Join(" ", parts)} | W+S/2 = {Plan.Winners}+{Plan.Swings}/2{lb} = {raw:F1}";
                 if (deviated) msg += $" | mizaç → {adjusted:F2}";
                 if (zeroLifted) msg += " | 0 güvensiz (kaçamayan Swing) → 1";
                 if (forbidden.HasValue) msg += $" | yasak {forbidden.Value}, en yakın legal";

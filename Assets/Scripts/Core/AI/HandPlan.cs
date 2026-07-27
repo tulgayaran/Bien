@@ -17,7 +17,8 @@ namespace Bien.Core.AI
         public readonly Dictionary<Card, CardRole> Roles = new();
         public PlayerStance Stance;
         public int TargetTricks;      // konuşulan ihale (mizaç dahil)
-        public double RawBid;         // W + S/2 ham değeri
+        public double RawBid;         // W + S/2 + uzunluk bonusu
+        public double LengthBonus;    // Tulga uzunluk kuralı: koz adedi × (koz adedi / tur kartı)
 
         public int Winners => Roles.Count(kv => kv.Value == CardRole.Winner);
         public int Swings => Roles.Count(kv => kv.Value == CardRole.Swing);
@@ -34,6 +35,18 @@ namespace Bien.Core.AI
                               : CardRole.Loser;
             }
             plan.RawBid = plan.Winners + plan.Swings * 0.5;
+
+            // UZUNLUK KURALI (Tulga, 2026-07): merdiven kartları tek tek puanlar, koz
+            // uzunluğu sinerjisini görmez (4 koz/7 kartta rakipler ~1.3'er kozla kurur,
+            // küçük kozlar el üretir). Ek el = adet × oran = T²/n — katsayısız kapalı formül.
+            // Sadece kozlu ve 5+ kartlık turlarda (1-4 kart zaten ExactSolver'da).
+            if (trump.HasValue && roundSize >= 5)
+            {
+                int t = 0;
+                foreach (var c in hand) if (c.Suit == trump.Value) t++;
+                plan.LengthBonus = t * t / (double)roundSize;
+                plan.RawBid += plan.LengthBonus;
+            }
             return plan;
         }
 

@@ -32,7 +32,8 @@ namespace Bien.Core.AI
             // ---- H8: her el şart ----
             if (need >= hand.Count)
             {
-                var pick = GoalPicker.Pick(Score(legal, winNow), tier, rng, out double p, out string bn);
+                // Eşitlikte (özellikle hepsi P=0: bu el alınamaz) EN UCUZ kart harcanır — sermaye yanmaz
+                var pick = GoalPicker.Pick(Score(legal, winNow), tier, rng, out double p, out string bn, keepValue);
                 reason = $"H8: her el şart ({need}/{hand.Count}) — %{p * 100:F0} alır ({bn})";
                 return pick;
             }
@@ -51,7 +52,7 @@ namespace Bien.Core.AI
                 }
                 var tops = legal.GroupBy(c => c.Suit)
                                 .Select(g => g.OrderByDescending(c => c.Rank).First()).ToList();
-                var lead = GoalPicker.Pick(Score(tops, winNow), tier, rng, out double p2, out string bn2);
+                var lead = GoalPicker.Pick(Score(tops, winNow), tier, rng, out double p2, out string bn2, keepValue);
                 reason = $"H2: boss yok — zorlama açış (%{p2 * 100:F0} alır, {bn2})";
                 return lead;
             }
@@ -100,7 +101,7 @@ namespace Bien.Core.AI
                     reason = $"H3: son söz bende — israfsız alıyorum (ihtiyaç {need}, {bn})";
                     return pick;
                 }
-                var press = GoalPicker.Pick(Score(winning, winNow), tier, rng, out double p5, out string bn5);
+                var press = GoalPicker.Pick(Score(winning, winNow), tier, rng, out double p5, out string bn5, keepValue);
                 reason = $"H4: arkada {playersAfter} kişi — %{p5 * 100:F0} sağ çıkar ({bn5})";
                 return press;
             }
