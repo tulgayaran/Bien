@@ -29,7 +29,8 @@ namespace Bien.Unity
         [Tooltip("AI elleri açık oynanır ve kararların gerekçesi ekrana yazılır")]
         public bool debugMode = true;
 
-        const float CARD_W = 214f, CARD_H = 300f;          // el kartları
+        const float CARD_W = 214f, CARD_H = 300f;          // AI kartları (0.58 ölçekle) + yedek
+        const float HAND_W = 262f, HAND_H = 367f;          // SENİN kartların — büyük, yelpaze
         const float TRICK_W = 200f, TRICK_H = 280f;        // merkezdeki oynanmış kartlar
         static readonly string[] SeatNames = { "SEN", "BATI", "KUZEY", "DOĞU" };
 
@@ -45,6 +46,7 @@ namespace Bien.Unity
         Canvas _canvas;
         Font _font;       // genel UI fontu   — Resources/bien_font varsa o, yoksa LegacyRuntime
         Font _fancyFont;  // plaka/isim fontu — Resources/bien_font_fancy varsa o, yoksa _font
+        Font _numFont;    // tablo sayı fontu — bien_font_num veya SpaceGrotesk-Medium, yoksa _font
         static Sprite _roundedSprite; // prosedürel yuvarlak köşe (9-slice) — buton/çip/panel
         static Sprite _feltSprite;    // prosedürel radyal çuha degradesi (yedek zemin)
         Sprite _zoneSprite;           // Resources/bien_zone — el alanı çipi (9-slice)
@@ -57,6 +59,9 @@ namespace Bien.Unity
         readonly Text[] _bidLabels = new Text[4];
         readonly RectTransform[] _aiBackAreas = new RectTransform[3]; // seat 1,2,3
         Image _trumpImage; Text _trumpText, _roundText, _scoreText, _statusText, _bidTotalText;
+        GameObject _scoreBox;                                 // sağ üst skor tablosu (art modu)
+        readonly Text[] _scoreNameT = new Text[4];            // tablo: isim kolonu
+        readonly Text[] _scoreValT = new Text[4];             // tablo: skor kolonu
         AiDifficulty[] _seatDiffs;
 
         // --- UNDO: deterministik yeniden oynatma. Oyun tohumu + insan hamleleri kaydedilir;
@@ -93,6 +98,8 @@ namespace Bien.Unity
             _font = Resources.Load<Font>("bien_font")
                     ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             _fancyFont = Resources.Load<Font>("bien_font_fancy") ?? _font;
+            _numFont = Resources.Load<Font>("bien_font_num")
+                       ?? Resources.Load<Font>("SpaceGrotesk-Medium") ?? _font;
             if (_roundedSprite == null) _roundedSprite = MakeRoundedSprite(64, 18);
             if (_feltSprite == null) _feltSprite = MakeFeltSprite(256);
             BuildUI();
@@ -431,12 +438,15 @@ namespace Bien.Unity
 
             var tc = MakeCardImage(_trickSlots[seat], CardSprites.Get(card), TRICK_W, TRICK_H);
             _trickCards.Add(tc.gameObject);
+            // Janjan: kart dönerek ve büyükten küçülerek gelir, sonda TAM DÜŞEY oturur
             if (_fast) tc.anchoredPosition = Vector2.zero;
             else
             {
                 Vector2 slideFrom = SeatFxPos(seat) - _slotPos[seat];
+                float dir = seat == 1 ? -1f : seat == 3 ? 1f : seat == 2 ? 0.7f : -0.7f;
+                float spin = dir * UnityEngine.Random.Range(160f, 260f); // geliş yönüne göre dönüş
                 tc.anchoredPosition = slideFrom;
-                StartCoroutine(SlideIn(tc, slideFrom, Vector2.zero, 0.22f));
+                StartCoroutine(FlySpin(tc, slideFrom, Vector2.zero, 0.34f, spin, 0f, 1.35f));
             }
         }
 
@@ -606,15 +616,9 @@ namespace Bien.Unity
                 _decorRoot.anchorMin = Vector2.zero; _decorRoot.anchorMax = Vector2.one;
                 _decorRoot.offsetMin = _decorRoot.offsetMax = Vector2.zero;
 
-                // Üst/alt plaka isim yazıları (görseldeki plakalara hizalı; isimler StartNewEngine'de).
-                // Yan plakalar görselden silindi (çentik altında kalıyordu) — BATI/DOĞU isimleri
-                // safe-area'ya bağlı çipler olarak aşağıda, _safe kurulunca eklenir.
-                var plateCol = new Color(0.95f, 0.87f, 0.60f);
-                _plateTexts[2] = MakeText(_decorRoot, "PlateN", new Vector2(0.5f, 1f), new Vector2(0, -48), 34, TextAnchor.MiddleCenter);
-                _plateTexts[0] = MakeText(_decorRoot, "PlateS", new Vector2(0.5f, 0f), new Vector2(0, 46), 34, TextAnchor.MiddleCenter);
-                _plateTexts[2].fontStyle = FontStyle.Bold; _plateTexts[2].color = plateCol;
-                _plateTexts[0].fontStyle = FontStyle.Bold; _plateTexts[0].color = plateCol;
-                _plateTexts[2].font = _fancyFont; _plateTexts[0].font = _fancyFont;
+                // İsimler artık kenar plakalarında değil: kenar → kartlar → isim → ihale
+                // düzeninde, merkeze doğru pill'lerde (aşağıda _safe kurulunca eklenir).
+                // Tulga PNG'deki isim bantlarını içeri taşıyınca pill'ler o bantlara oturtulacak.
             }
             else if (art)
             {
@@ -674,19 +678,10 @@ namespace Bien.Unity
 
             if (_artTable)
             {
-                // BATI/DOĞU isimleri: görseldeki DÜŞEY kenar plakalarının içinde, döndürülmüş yazı.
-                // Oransal x çapası: görsel yatay esnese de plaka üzerinde kalır.
-                var plateCol = new Color(0.95f, 0.87f, 0.60f);
-                _plateTexts[1] = MakeText(_decorRoot, "PlateW", new Vector2(42f / 2532f, 1f), new Vector2(0, -608), 34, TextAnchor.MiddleCenter);
-                _plateTexts[3] = MakeText(_decorRoot, "PlateE", new Vector2(2490f / 2532f, 1f), new Vector2(0, -608), 34, TextAnchor.MiddleCenter);
-                _plateTexts[1].transform.localRotation = Quaternion.Euler(0, 0, 90);   // sol: aşağıdan yukarı
-                _plateTexts[3].transform.localRotation = Quaternion.Euler(0, 0, -90);  // sağ: yukarıdan aşağı
-                foreach (var pt in new[] { _plateTexts[1], _plateTexts[3] })
-                {
-                    ((RectTransform)pt.transform).sizeDelta = new Vector2(330, 60);
-                    pt.fontStyle = FontStyle.Bold; pt.color = plateCol;
-                    pt.font = _fancyFont;
-                }
+                // Düzen (kenardan merkeze): kartlar → İSİM → İHALE. Batı/doğu döndürülmüş.
+                _plateTexts[2] = MakeFramedLabel(_safe, new Vector2(0.5f, 1f), new Vector2(0, -215), new Vector2(300, 58), 37, 0, false);
+                _plateTexts[1] = MakeFramedLabel(_safe, new Vector2(0f, 0.5f), new Vector2(168, -10), new Vector2(300, 58), 37, 90, false);
+                _plateTexts[3] = MakeFramedLabel(_safe, new Vector2(1f, 0.5f), new Vector2(-168, -10), new Vector2(300, 58), 37, -90, false);
             }
 
             if (!art && !_artTable)
@@ -751,9 +746,62 @@ namespace Bien.Unity
                 : MakeFramedLabel(_safe, new Vector2(0f, 1f), new Vector2(620, -240), new Vector2(430, 64), 38, 0, true);
 
             // Skor (sağ üst)
-            _scoreText = MakeText(_safe, "Score", new Vector2(1f, 1f), new Vector2(-190, -60), 28, TextAnchor.UpperLeft);
-            ((RectTransform)_scoreText.transform).sizeDelta = new Vector2(300, 300);
-            _scoreText.text = "";
+            // Genel skor: sağ üstte, TAMAMEN ekran içinde, çerçeveli (eski hali yarıya kadar
+            // ekran dışındaydı — sadece son iki satır görünüyordu)
+            if (_artTable)
+            {
+                // SKOR: iki kolonlu (isim | puan), ince ızgara çizgili mini tablo
+                _scoreBox = new GameObject("ScoreBox", typeof(Image));
+                var sbr = (RectTransform)_scoreBox.transform;
+                sbr.SetParent(_safe, false);
+                sbr.anchorMin = sbr.anchorMax = new Vector2(1f, 1f);
+                sbr.anchoredPosition = new Vector2(-395, -255);
+                sbr.sizeDelta = new Vector2(400, 312);
+                var sbi = _scoreBox.GetComponent<Image>();
+                sbi.sprite = _zoneSprite != null ? _zoneSprite : _roundedSprite;
+                sbi.type = Image.Type.Sliced;
+                sbi.color = _zoneSprite != null ? Color.white : new Color(0f, 0f, 0f, 0.45f);
+                sbi.raycastTarget = false;
+
+                void SLine(float x, float y, float w, float h)
+                {
+                    var lg = new GameObject("Ln", typeof(Image));
+                    var lr = (RectTransform)lg.transform;
+                    lr.SetParent(sbr, false);
+                    lr.anchorMin = lr.anchorMax = new Vector2(0.5f, 1f);
+                    lr.anchoredPosition = new Vector2(x, y);
+                    lr.sizeDelta = new Vector2(w, h);
+                    var li = lg.GetComponent<Image>();
+                    li.color = new Color(1f, 1f, 1f, 0.16f);
+                    li.raycastTarget = false;
+                }
+
+                var hd = MakeText(sbr, "H", new Vector2(0.5f, 1f), new Vector2(0, -34), 30, TextAnchor.MiddleCenter);
+                hd.text = "PUANLAR"; hd.fontStyle = FontStyle.Bold;
+                hd.color = new Color(1f, 0.9f, 0.45f); hd.font = _fancyFont;
+                SLine(0, -58, 356, 2);                    // başlık altı
+                for (int i = 0; i < 4; i++)
+                {
+                    float y = -88 - i * 56;
+                    _scoreNameT[i] = MakeText(sbr, $"N{i}", new Vector2(0.5f, 1f), new Vector2(-90, y), 29, TextAnchor.MiddleLeft);
+                    ((RectTransform)_scoreNameT[i].transform).sizeDelta = new Vector2(200, 52);
+                    _scoreNameT[i].color = new Color(0.95f, 0.87f, 0.60f);
+                    _scoreNameT[i].fontStyle = FontStyle.Bold;
+                    _scoreValT[i] = MakeText(sbr, $"V{i}", new Vector2(0.5f, 1f), new Vector2(122, y), 30, TextAnchor.MiddleCenter);
+                    ((RectTransform)_scoreValT[i].transform).sizeDelta = new Vector2(130, 52);
+                    _scoreValT[i].fontStyle = FontStyle.Bold;
+                    _scoreValT[i].font = _numFont;
+                    if (i < 3) SLine(0, y - 28, 356, 1.5f); // satır ayracı
+                }
+                SLine(58, -160, 1.5f, 204);               // kolon ayracı (başlık altından tabana)
+                _scoreBox.SetActive(false);               // ilk skora kadar gizli
+            }
+            else
+            {
+                _scoreText = MakeText(_safe, "Score", new Vector2(1f, 1f), new Vector2(-190, -230), 28, TextAnchor.UpperLeft);
+                ((RectTransform)_scoreText.transform).sizeDelta = new Vector2(300, 300);
+                _scoreText.text = "";
+            }
 
             // Koltuk etiketleri + ihale çipleri + AI arka alanları
             // seat1 BATI (sol), seat2 KUZEY (üst), seat3 DOĞU (sağ)
@@ -761,10 +809,10 @@ namespace Bien.Unity
             // isimlerin dibinde: kuzey üst plakanın altında, batı/doğu plakanın iç yanında DÜŞEY.
             if (_artTable)
             {
-                // [0] SEN: el alanı yaratıldıktan sonra eklenir (kartların ÜSTÜNDE render olsun)
-                _bidLabels[1] = MakeFramedLabel(_decorRoot, new Vector2(124f / 2532f, 1f), new Vector2(0, -608), new Vector2(300, 54), 32, 90, true);
-                _bidLabels[2] = MakeFramedLabel(_decorRoot, new Vector2(0.5f, 1f), new Vector2(0, -127), new Vector2(300, 54), 32, 0, true);
-                _bidLabels[3] = MakeFramedLabel(_decorRoot, new Vector2(2408f / 2532f, 1f), new Vector2(0, -608), new Vector2(300, 54), 32, -90, true);
+                // [0] SEN el alanından sonra; diğerleri isim pill'inin merkez yanında
+                _bidLabels[2] = MakeFramedLabel(_safe, new Vector2(0.5f, 1f), new Vector2(0, -283), new Vector2(300, 54), 35, 0, true);
+                _bidLabels[1] = MakeFramedLabel(_safe, new Vector2(0f, 0.5f), new Vector2(240, -10), new Vector2(300, 54), 35, 90, true);
+                _bidLabels[3] = MakeFramedLabel(_safe, new Vector2(1f, 0.5f), new Vector2(-240, -10), new Vector2(300, 54), 35, -90, true);
             }
             else
             {
@@ -786,9 +834,10 @@ namespace Bien.Unity
             }
 
             // BATI/DOĞU elleri kenara yaslı DÜŞEY sütun, KUZEY yatay sıra
-            _aiBackAreas[0] = MakeArea(_safe, "BacksW", new Vector2(0f, 0.5f), new Vector2(300, -10)); // plaka + ihale çipini kapatmasın
-            _aiBackAreas[1] = MakeArea(_safe, "BacksN", new Vector2(0.5f, 1f), new Vector2(0, -275));
-            _aiBackAreas[2] = MakeArea(_safe, "BacksE", new Vector2(1f, 0.5f), new Vector2(-300, -10));
+            // AI kartları kenara yarı gömük (art); isim ve ihale iç yanlarında
+            _aiBackAreas[0] = MakeArea(_safe, "BacksW", new Vector2(0f, 0.5f), new Vector2(_artTable ? 45 : 300, -10));
+            _aiBackAreas[1] = MakeArea(_safe, "BacksN", new Vector2(0.5f, 1f), new Vector2(0, _artTable ? -90 : -275));
+            _aiBackAreas[2] = MakeArea(_safe, "BacksE", new Vector2(1f, 0.5f), new Vector2(_artTable ? -45 : -300, -10));
 
             // El alanları (merkez etrafı) — sırayla alt, sol, üst, sağ; üst üste binecek kadar yakın
             _slotPos = new Vector2[] { new(0, -135), new(-160, 0), new(0, 125), new(160, 0) };
@@ -801,9 +850,13 @@ namespace Bien.Unity
             _fxLayer = MakeArea(_safe, "FX", new Vector2(0.5f, 0.5f), Vector2.zero);
 
             // İnsan eli (alt)
-            _handArea = MakeArea(_safe, "Hand", new Vector2(0.5f, 0f), new Vector2(0, 185)); // alt taşma düzeltildi
-            if (_artTable) // SEN ihale çipi: alt plakanın (ismin) hemen üstünde, kartların üzerinde
-                _bidLabels[0] = MakeFramedLabel(_safe, new Vector2(0.5f, 0f), new Vector2(0, 125), new Vector2(300, 54), 32, 0, true);
+            // El: kartların ~yarısı ekranda ("elimde tutuyorum" hissi); üstünde isim, onun üstünde ihale
+            _handArea = MakeArea(_safe, "Hand", new Vector2(0.5f, 0f), new Vector2(0, _artTable ? 8 : 185));
+            if (_artTable)
+            {
+                _plateTexts[0] = MakeFramedLabel(_safe, new Vector2(0.5f, 0f), new Vector2(0, 235), new Vector2(300, 58), 37, 0, false);
+                _bidLabels[0] = MakeFramedLabel(_safe, new Vector2(0.5f, 0f), new Vector2(0, 302), new Vector2(300, 54), 35, 0, true);
+            }
 
             // İhale paneli
             _bidPanel = MakePanel(_safe, "BidPanel", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Color(0f, 0f, 0f, 0.86f));
@@ -878,7 +931,7 @@ namespace Bien.Unity
             var sorted = hand.OrderBy(c => c.Suit).ThenByDescending(c => c.Rank).ToList();
             foreach (var card in sorted)
             {
-                var rt = MakeCardImage(_handArea, CardSprites.Get(card), CARD_W, CARD_H);
+                var rt = MakeCardImage(_handArea, CardSprites.Get(card), HAND_W, HAND_H);
                 var go = rt.gameObject;
                 go.AddComponent<CardRef>().Card = card;
                 var btn = go.AddComponent<Button>();
@@ -894,13 +947,15 @@ namespace Bien.Unity
         {
             int n = _handCards.Count;
             if (n == 0) return;
-            float overlap = n > 7 ? (2100f - CARD_W) / (n - 1) : CARD_W + 12;
-            overlap = Mathf.Min(overlap, CARD_W + 12);
-            float total = CARD_W + (n - 1) * overlap;
+            // El sayısından bağımsız yelpaze: kartlar HER ZAMAN üst üste biner,
+            // çok kartta toplam genişlik sığacak kadar sıkışır.
+            float step = HAND_W * 0.62f;
+            if (n > 1) step = Mathf.Min(step, (2100f - HAND_W) / (n - 1));
+            float total = HAND_W + (n - 1) * step;
             for (int i = 0; i < n; i++)
             {
                 var rt = (RectTransform)_handCards[i].transform;
-                rt.anchoredPosition = new Vector2(-total / 2 + CARD_W / 2 + i * overlap, rt.anchoredPosition.y);
+                rt.anchoredPosition = new Vector2(-total / 2 + HAND_W / 2 + i * step, rt.anchoredPosition.y);
                 rt.SetSiblingIndex(i);
             }
         }
@@ -944,6 +999,30 @@ namespace Bien.Unity
 
         void DebugLine(string s) => AiLogger.Write(s);
 
+        /// <summary>Kart uçuşu: konum ease-out, dönüş ve ölçek birlikte söner; sonda 'rest' açısında kalır.</summary>
+        System.Collections.IEnumerator FlySpin(RectTransform rt, Vector2 from, Vector2 to, float dur,
+                                               float fromRot, float restRot, float fromScale)
+        {
+            float t = 0;
+            while (t < dur)
+            {
+                if (rt == null) yield break;
+                t += Time.deltaTime;
+                float k = 1f - Mathf.Pow(1f - Mathf.Clamp01(t / dur), 3f); // ease-out cubic
+                rt.anchoredPosition = Vector2.LerpUnclamped(from, to, k);
+                rt.localRotation = Quaternion.Euler(0, 0, Mathf.LerpUnclamped(fromRot, restRot, k));
+                float s = Mathf.LerpUnclamped(fromScale, 1f, k);
+                rt.localScale = new Vector3(s, s, 1f);
+                yield return null;
+            }
+            if (rt != null)
+            {
+                rt.anchoredPosition = to;
+                rt.localRotation = Quaternion.Euler(0, 0, restRot);
+                rt.localScale = Vector3.one;
+            }
+        }
+
         System.Collections.IEnumerator SlideIn(RectTransform rt, Vector2 from, Vector2 to, float dur)
         {
             float t = 0;
@@ -966,8 +1045,24 @@ namespace Bien.Unity
 
         void UpdateScoreboard()
         {
-            _scoreText.text = "SKOR\n" + string.Join("\n",
-                _engine.TotalScores.Select((s, i) => $"{_names[i],-7} {s}"));
+            // DİKKAT: motor TotalScores'u tur-sonu olayı bittikten SONRA günceller —
+            // oradan okuyunca tablo bir el geriden gelir. Toplamlar _history'den alınır.
+            var totals = new int[4];
+            foreach (var rr in _history)
+                for (int i = 0; i < 4; i++) totals[i] += rr.Scores[i];
+
+            if (_scoreBox != null)
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    _scoreNameT[i].text = _names[i];
+                    _scoreValT[i].text = totals[i].ToString();
+                }
+                _scoreBox.SetActive(true); // ilk puanlarla birlikte görünür
+                return;
+            }
+            _scoreText.text = "PUANLAR\n" + string.Join("\n",
+                totals.Select((s, i) => $"{_names[i]}  {s}"));
         }
 
         /// <summary>4 sütun × 16 tur + toplam satırı. Batan: kırmızı X, çıkan: o tur aldığı puan.
@@ -1030,12 +1125,14 @@ namespace Bien.Unity
                 var lbl = MakeText(_popup, $"R{i}", new Vector2(0.5f, 1f), new Vector2(colX[0], y), 36, TextAnchor.MiddleCenter);
                 lbl.text = rounds[i].CardsPerPlayer.ToString() + (rounds[i].HasTrump ? "" : "*");
                 lbl.color = new Color(0.7f, 0.8f, 0.75f);
+                lbl.font = _numFont;
 
                 if (i >= _history.Count) continue;
                 var rr = _history[i];
                 for (int p = 0; p < 4; p++)
                 {
                     var cell = MakeText(_popup, $"C{i}_{p}", new Vector2(0.5f, 1f), new Vector2(colX[p + 1], y), 40, TextAnchor.MiddleCenter);
+                    cell.font = _numFont;
                     bool made = rr.Bids[p] == rr.TricksWon[p];
                     if (made) { cell.text = rr.Scores[p].ToString(); cell.color = Color.white; }
                     else { cell.text = "X"; cell.fontStyle = FontStyle.Bold; cell.color = new Color(1f, 0.35f, 0.3f); }
@@ -1053,6 +1150,7 @@ namespace Bien.Unity
                 int sum = 0;
                 foreach (var rr in _history) sum += rr.Scores[p];
                 var tot = MakeText(_popup, $"T{p}", new Vector2(0.5f, 1f), new Vector2(colX[p + 1], ty), 46, TextAnchor.MiddleCenter);
+                tot.font = _numFont;
                 tot.text = sum.ToString();
                 tot.fontStyle = FontStyle.Bold;
                 tot.color = new Color(1f, 0.85f, 0.25f);
