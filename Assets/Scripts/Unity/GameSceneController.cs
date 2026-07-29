@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 using Bien.Core;
 using Bien.Core.AI;
 
@@ -44,24 +45,24 @@ namespace Bien.Unity
         readonly string[] _names = { "Sen", "BATI", "KUZEY", "DOĞU" };
 
         Canvas _canvas;
-        Font _font;       // genel UI fontu   — Resources/bien_font varsa o, yoksa LegacyRuntime
-        Font _fancyFont;  // plaka/isim fontu — Resources/bien_font_fancy varsa o, yoksa _font
-        Font _numFont;    // tablo sayı fontu — bien_font_num veya SpaceGrotesk-Medium, yoksa _font
+        TMP_FontAsset _font;      // genel: Resources/bien_tmp (SDF)
+        TMP_FontAsset _fancyFont; // plaka:  Resources/bien_tmp_fancy, yoksa _font
+        TMP_FontAsset _numFont;   // sayı:   bien_tmp_num veya SpaceGrotesk-Medium SDF, yoksa _font
         static Sprite _roundedSprite; // prosedürel yuvarlak köşe (9-slice) — buton/çip/panel
         static Sprite _feltSprite;    // prosedürel radyal çuha degradesi (yedek zemin)
         Sprite _zoneSprite;           // Resources/bien_zone — el alanı çipi (9-slice)
         RectTransform _root, _handArea, _bidPanel, _popup;
         RectTransform _decorRoot;     // masa görseli üstü dekor katmanı (plaka isimleri, koz)
         bool _artTable;               // Resources/bien_table yüklendi mi
-        readonly Text[] _plateTexts = new Text[4]; // plaka isim yazıları (alt/sol/üst/sağ)
+        readonly TMP_Text[] _plateTexts = new TMP_Text[4]; // plaka isim yazıları (alt/sol/üst/sağ)
         readonly RectTransform[] _trickSlots = new RectTransform[4];
-        readonly Text[] _seatLabels = new Text[4];
-        readonly Text[] _bidLabels = new Text[4];
+        readonly TMP_Text[] _seatLabels = new TMP_Text[4];
+        readonly TMP_Text[] _bidLabels = new TMP_Text[4];
         readonly RectTransform[] _aiBackAreas = new RectTransform[3]; // seat 1,2,3
-        Image _trumpImage; Text _trumpText, _roundText, _scoreText, _statusText, _bidTotalText;
+        Image _trumpImage; TMP_Text _trumpText, _roundText, _scoreText, _statusText, _bidTotalText;
         GameObject _scoreBox;                                 // sağ üst skor tablosu (art modu)
-        readonly Text[] _scoreNameT = new Text[4];            // tablo: isim kolonu
-        readonly Text[] _scoreValT = new Text[4];             // tablo: skor kolonu
+        readonly TMP_Text[] _scoreNameT = new TMP_Text[4];    // tablo: isim kolonu
+        readonly TMP_Text[] _scoreValT = new TMP_Text[4];     // tablo: skor kolonu
         AiDifficulty[] _seatDiffs;
 
         // --- UNDO: deterministik yeniden oynatma. Oyun tohumu + insan hamleleri kaydedilir;
@@ -92,14 +93,12 @@ namespace Bien.Unity
         // ------------------------------------------------------------------ setup
         void Awake()
         {
-            // Font yükleme sırası: kullanıcı fontları (Resources'a .ttf atmak yeter) → yerleşik.
-            // bien_font       → tüm arayüz yazıları
-            // bien_font_fancy → sadece isim plakaları ve çerçeveli etiketler (süslü font buraya)
-            _font = Resources.Load<Font>("bien_font")
-                    ?? Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            _fancyFont = Resources.Load<Font>("bien_font_fancy") ?? _font;
-            _numFont = Resources.Load<Font>("bien_font_num")
-                       ?? Resources.Load<Font>("SpaceGrotesk-Medium") ?? _font;
+            // TEK FONT DÜZENİ: Resources/bien_tmp her yerde kullanılır.
+            // İleride ayrıştırmak istersen: bien_tmp_fancy (plakalar) ve bien_tmp_num
+            // (tablo sayıları) adlarıyla ek SDF koyman yeter — varsa otomatik devreye girer.
+            _font = Resources.Load<TMP_FontAsset>("bien_tmp");
+            _fancyFont = Resources.Load<TMP_FontAsset>("bien_tmp_fancy") ?? _font;
+            _numFont = Resources.Load<TMP_FontAsset>("bien_tmp_num") ?? _font;
             if (_roundedSprite == null) _roundedSprite = MakeRoundedSprite(64, 18);
             if (_feltSprite == null) _feltSprite = MakeFeltSprite(256);
             BuildUI();
@@ -235,7 +234,7 @@ namespace Bien.Unity
             ev.BidRevised += (s, o, n) =>
             {
                 _bidsThisRound[s] = n;
-                SetBid(s, $"İhale: {n}*");
+                SetBid(s, $"İhale: {n}*  El: 0");
                 SetStatus($"{_names[s]} ihalesini {o}→{n} değiştirdi, dağıtıcı kurtarıldı");
                 UpdateBidTotal();
             };
@@ -291,7 +290,9 @@ namespace Bien.Unity
             _bidTotalText.text = "";
             _bidTotalText.transform.parent.gameObject.SetActive(false);
             _tricksWonLive = new int[4];
-            _roundText.text = $"Tur {rc.RoundIndex + 1}/16  •  {rc.CardsPerPlayer} kart" + (rc.HasTrump ? "" : "  •  SANS");
+            _roundText.text = _artTable
+                ? $"TUR {rc.RoundIndex + 1}/16"
+                : $"Tur {rc.RoundIndex + 1}/16  •  {rc.CardsPerPlayer} kart" + (rc.HasTrump ? "" : "  •  SANS");
             for (int i = 0; i < 4; i++)
             {
                 SetBid(i, "");
@@ -380,7 +381,7 @@ namespace Bien.Unity
         {
             _lastBids[seat] = bid;
             _bidsThisRound[seat] = bid;
-            SetBid(seat, $"İhale: {bid}");
+            SetBid(seat, $"İhale: {bid}  El: 0");
             SetStatus($"{_names[seat]}: {bid} dedi");
             UpdateBidTotal();
         }
@@ -679,9 +680,9 @@ namespace Bien.Unity
             if (_artTable)
             {
                 // Düzen (kenardan merkeze): kartlar → İSİM → İHALE. Batı/doğu döndürülmüş.
-                _plateTexts[2] = MakeFramedLabel(_safe, new Vector2(0.5f, 1f), new Vector2(0, -215), new Vector2(300, 58), 37, 0, false);
-                _plateTexts[1] = MakeFramedLabel(_safe, new Vector2(0f, 0.5f), new Vector2(168, -10), new Vector2(300, 58), 37, 90, false);
-                _plateTexts[3] = MakeFramedLabel(_safe, new Vector2(1f, 0.5f), new Vector2(-168, -10), new Vector2(300, 58), 37, -90, false);
+                _plateTexts[2] = MakeFramedLabel(_safe, new Vector2(0.5f, 1f), new Vector2(0, -215), new Vector2(330, 74), 46, 0, false);
+                _plateTexts[1] = MakeFramedLabel(_safe, new Vector2(0f, 0.5f), new Vector2(330, 44), new Vector2(330, 74), 46, 0, false);
+                _plateTexts[3] = MakeFramedLabel(_safe, new Vector2(1f, 0.5f), new Vector2(-330, 44), new Vector2(330, 74), 46, 0, false);
             }
 
             if (!art && !_artTable)
@@ -699,12 +700,28 @@ namespace Bien.Unity
                 cimg.raycastTarget = false;
             }
 
-            // HUD üst şerit — tur yazısı sağ üstte (üst plaka KUZEY ismine kaldı)
-            _roundText = MakeText(_safe, "Round", new Vector2(1f, 1f), new Vector2(-620, -45), 36, TextAnchor.MiddleCenter);
-            ((RectTransform)_roundText.transform).sizeDelta = new Vector2(460, 56);
-            AddChip(_roundText, new Vector2(470, 58), new Color(0f, 0f, 0f, 0.35f));
-            _statusText = MakeText(_safe, "Status", new Vector2(0.5f, 0f), new Vector2(0, 368), 32, TextAnchor.MiddleCenter); // büyüyen el kartlarının üstünde
-            _statusText.color = new Color(1f, 0.92f, 0.6f);
+            // HUD üst şerit — TUR yazısı: art modunda Toplam çerçevesinin altında, aynı stil
+            if (_artTable)
+            {
+                _roundText = MakeFramedLabel(_decorRoot, new Vector2(560f / 2532f, 1f), new Vector2(0, -252), new Vector2(310, 58), 36, 0, false);
+                PinLeft(_roundText, -252);
+            }
+            else
+            {
+                _roundText = MakeText(_safe, "Round", new Vector2(1f, 1f), new Vector2(-620, -45), 36, TextAnchor.MiddleCenter);
+                ((RectTransform)_roundText.transform).sizeDelta = new Vector2(460, 56);
+                AddChip(_roundText, new Vector2(470, 58), new Color(0f, 0f, 0f, 0.35f));
+            }
+            if (_artTable)
+            {
+                // Oyun bilgi mesajları: sol üstte, Toplam çerçevesinin altında, sola dayalı
+                _statusText = MakeFramedLabel(_decorRoot, new Vector2(715f / 2532f, 1f), new Vector2(0, -332), new Vector2(620, 58), 36, 0, true);
+                PinLeft(_statusText, -332);
+                _statusText.color = new Color(0.95f, 0.30f, 0.25f);    // kırmızı — dikkat çeksin
+            }
+            else
+                _statusText = MakeText(_safe, "Status", new Vector2(0.5f, 0f), new Vector2(0, 368), 32, TextAnchor.MiddleCenter);
+            if (!_artTable) _statusText.color = new Color(1f, 0.92f, 0.6f);
 
             // Koz göstergesi (sol üst) — masa görselindeki yuvaya hizalı.
             // Görsel tam ekrana GERİLDİĞİ için yuvanın x'i oransal çapayla izlenir
@@ -712,7 +729,7 @@ namespace Bien.Unity
             var trumpParent = _decorRoot != null ? (Transform)_decorRoot : _safe;
             var trumpAnchor = _artTable ? new Vector2(250f / 2532f, 1f) : new Vector2(0f, 1f);
             var trumpGo = MakeCardImage(trumpParent, null,
-                _artTable ? 145f : CARD_W * 0.72f, _artTable ? 182f : CARD_H * 0.72f);
+                _artTable ? 181f : CARD_W * 0.72f, _artTable ? 228f : CARD_H * 0.72f); // ×1.25 (Tulga PNG'deki yuvayı büyütecek)
             trumpGo.anchorMin = trumpGo.anchorMax = trumpAnchor;
             trumpGo.anchoredPosition = _artTable ? new Vector2(0, -178) : new Vector2(240, -240);
             _trumpImage = trumpGo.GetComponent<Image>();
@@ -721,7 +738,7 @@ namespace Bien.Unity
             _trumpText = MakeText(trumpParent, "TrumpLbl", trumpAnchor,
                 _artTable ? new Vector2(0, -178) : new Vector2(240, -388), _artTable ? 36 : 30, TextAnchor.MiddleCenter);
             ((RectTransform)_trumpText.transform).sizeDelta = new Vector2(200, 40);
-            if (_artTable) { _trumpText.fontStyle = FontStyle.Bold; _trumpText.color = new Color(0.95f, 0.87f, 0.60f); }
+            if (_artTable) { _trumpText.fontStyle = FontStyles.Normal; _trumpText.color = new Color(0.95f, 0.87f, 0.60f); }
 
             // Puan tablosu butonu (sol üst)
             var tblBtn = MakeButton(_safe, "TABLO", new Vector2(210, 64), new Vector2(0f, 1f), new Vector2(400, -45), 28);
@@ -742,8 +759,9 @@ namespace Bien.Unity
 
             // Toplam ihale göstergesi: kozun hemen yanında, isim tahtası stilinde çerçeveli
             _bidTotalText = _artTable
-                ? MakeFramedLabel(_decorRoot, new Vector2(560f / 2532f, 1f), new Vector2(0, -178), new Vector2(430, 64), 38, 0, true)
+                ? MakeFramedLabel(_decorRoot, new Vector2(620f / 2532f, 1f), new Vector2(0, -178), new Vector2(430, 64), 38, 0, true)
                 : MakeFramedLabel(_safe, new Vector2(0f, 1f), new Vector2(620, -240), new Vector2(430, 64), 38, 0, true);
+            if (_artTable) PinLeft(_bidTotalText, -178);
 
             // Skor (sağ üst)
             // Genel skor: sağ üstte, TAMAMEN ekran içinde, çerçeveli (eski hali yarıya kadar
@@ -756,7 +774,7 @@ namespace Bien.Unity
                 sbr.SetParent(_safe, false);
                 sbr.anchorMin = sbr.anchorMax = new Vector2(1f, 1f);
                 sbr.anchoredPosition = new Vector2(-395, -255);
-                sbr.sizeDelta = new Vector2(400, 312);
+                sbr.sizeDelta = new Vector2(400, 342);
                 var sbi = _scoreBox.GetComponent<Image>();
                 sbi.sprite = _zoneSprite != null ? _zoneSprite : _roundedSprite;
                 sbi.type = Image.Type.Sliced;
@@ -776,24 +794,24 @@ namespace Bien.Unity
                     li.raycastTarget = false;
                 }
 
-                var hd = MakeText(sbr, "H", new Vector2(0.5f, 1f), new Vector2(0, -34), 30, TextAnchor.MiddleCenter);
-                hd.text = "PUANLAR"; hd.fontStyle = FontStyle.Bold;
-                hd.color = new Color(1f, 0.9f, 0.45f); hd.font = _fancyFont;
-                SLine(0, -58, 356, 2);                    // başlık altı
+                var hd = MakeText(sbr, "H", new Vector2(0.5f, 1f), new Vector2(0, -37), 34, TextAnchor.MiddleCenter);
+                hd.text = "PUANLAR"; hd.fontStyle = FontStyles.Normal;
+                hd.color = new Color(1f, 0.9f, 0.45f); if (_fancyFont != null) hd.font = _fancyFont;
+                SLine(0, -64, 352, 2);                    // başlık altı
                 for (int i = 0; i < 4; i++)
                 {
-                    float y = -88 - i * 56;
-                    _scoreNameT[i] = MakeText(sbr, $"N{i}", new Vector2(0.5f, 1f), new Vector2(-90, y), 29, TextAnchor.MiddleLeft);
-                    ((RectTransform)_scoreNameT[i].transform).sizeDelta = new Vector2(200, 52);
+                    float y = -97 - i * 61;
+                    _scoreNameT[i] = MakeText(sbr, $"N{i}", new Vector2(0.5f, 1f), new Vector2(-84, y), 33, TextAnchor.MiddleLeft);
+                    ((RectTransform)_scoreNameT[i].transform).sizeDelta = new Vector2(190, 56);
                     _scoreNameT[i].color = new Color(0.95f, 0.87f, 0.60f);
-                    _scoreNameT[i].fontStyle = FontStyle.Bold;
-                    _scoreValT[i] = MakeText(sbr, $"V{i}", new Vector2(0.5f, 1f), new Vector2(122, y), 30, TextAnchor.MiddleCenter);
-                    ((RectTransform)_scoreValT[i].transform).sizeDelta = new Vector2(130, 52);
-                    _scoreValT[i].fontStyle = FontStyle.Bold;
-                    _scoreValT[i].font = _numFont;
-                    if (i < 3) SLine(0, y - 28, 356, 1.5f); // satır ayracı
+                    _scoreNameT[i].fontStyle = FontStyles.Normal;
+                    _scoreValT[i] = MakeText(sbr, $"V{i}", new Vector2(0.5f, 1f), new Vector2(110, y), 34, TextAnchor.MiddleCenter);
+                    ((RectTransform)_scoreValT[i].transform).sizeDelta = new Vector2(120, 56);
+                    _scoreValT[i].fontStyle = FontStyles.Normal;
+                    if (_numFont != null) _scoreValT[i].font = _numFont;
+                    if (i < 3) SLine(0, y - 30.5f, 352, 1.5f); // satır ayracı
                 }
-                SLine(58, -160, 1.5f, 204);               // kolon ayracı (başlık altından tabana)
+                SLine(46, -188, 1.5f, 248);               // kolon ayracı (başlık altından tabana)
                 _scoreBox.SetActive(false);               // ilk skora kadar gizli
             }
             else
@@ -810,9 +828,9 @@ namespace Bien.Unity
             if (_artTable)
             {
                 // [0] SEN el alanından sonra; diğerleri isim pill'inin merkez yanında
-                _bidLabels[2] = MakeFramedLabel(_safe, new Vector2(0.5f, 1f), new Vector2(0, -283), new Vector2(300, 54), 35, 0, true);
-                _bidLabels[1] = MakeFramedLabel(_safe, new Vector2(0f, 0.5f), new Vector2(240, -10), new Vector2(300, 54), 35, 90, true);
-                _bidLabels[3] = MakeFramedLabel(_safe, new Vector2(1f, 0.5f), new Vector2(-240, -10), new Vector2(300, 54), 35, -90, true);
+                _bidLabels[2] = MakeFramedLabel(_safe, new Vector2(0.5f, 1f), new Vector2(0, -296), new Vector2(430, 68), 44, 0, true);
+                _bidLabels[1] = MakeFramedLabel(_safe, new Vector2(0f, 0.5f), new Vector2(385, -42), new Vector2(430, 68), 44, 0, true);
+                _bidLabels[3] = MakeFramedLabel(_safe, new Vector2(1f, 0.5f), new Vector2(-385, -42), new Vector2(430, 68), 44, 0, true);
             }
             else
             {
@@ -829,7 +847,7 @@ namespace Bien.Unity
             foreach (var t in _seatLabels)
             {
                 if (_artTable) { t.gameObject.SetActive(false); continue; } // isimler plakalarda
-                t.fontStyle = FontStyle.Bold;
+                t.fontStyle = FontStyles.Normal;
                 AddChip(t, new Vector2(250, 48), new Color(0f, 0f, 0f, 0.28f));
             }
 
@@ -839,8 +857,8 @@ namespace Bien.Unity
             _aiBackAreas[1] = MakeArea(_safe, "BacksN", new Vector2(0.5f, 1f), new Vector2(0, _artTable ? -90 : -275));
             _aiBackAreas[2] = MakeArea(_safe, "BacksE", new Vector2(1f, 0.5f), new Vector2(_artTable ? -45 : -300, -10));
 
-            // El alanları (merkez etrafı) — sırayla alt, sol, üst, sağ; üst üste binecek kadar yakın
-            _slotPos = new Vector2[] { new(0, -135), new(-160, 0), new(0, 125), new(160, 0) };
+            // El alanları (merkez etrafı) — sırayla alt, sol, üst, sağ; iyice iç içe pile
+            _slotPos = new Vector2[] { new(0, -90), new(-115, 0), new(0, 88), new(115, 0) };
             for (int i = 0; i < 4; i++)
             {
                 _trickSlots[i] = MakeArea(_safe, $"Trick{i}", new Vector2(0.5f, 0.5f), _slotPos[i]);
@@ -851,11 +869,11 @@ namespace Bien.Unity
 
             // İnsan eli (alt)
             // El: kartların ~yarısı ekranda ("elimde tutuyorum" hissi); üstünde isim, onun üstünde ihale
-            _handArea = MakeArea(_safe, "Hand", new Vector2(0.5f, 0f), new Vector2(0, _artTable ? 8 : 185));
+            _handArea = MakeArea(_safe, "Hand", new Vector2(0.5f, 0f), new Vector2(0, _artTable ? -35 : 185));
             if (_artTable)
             {
-                _plateTexts[0] = MakeFramedLabel(_safe, new Vector2(0.5f, 0f), new Vector2(0, 235), new Vector2(300, 58), 37, 0, false);
-                _bidLabels[0] = MakeFramedLabel(_safe, new Vector2(0.5f, 0f), new Vector2(0, 302), new Vector2(300, 54), 35, 0, true);
+                _plateTexts[0] = MakeFramedLabel(_safe, new Vector2(0.5f, 0f), new Vector2(0, 213), new Vector2(330, 74), 46, 0, false);
+                _bidLabels[0] = MakeFramedLabel(_safe, new Vector2(0.5f, 0f), new Vector2(0, 294), new Vector2(430, 68), 44, 0, true);
             }
 
             // İhale paneli
@@ -893,9 +911,9 @@ namespace Bien.Unity
                                               size + 152 + (revision ? 104 : 0));
             _bidPanel.anchoredPosition = new Vector2(0, 70);
 
-            var q = MakeText(_bidPanel, "Q", new Vector2(0.5f, 1f), new Vector2(0, -48), 34, TextAnchor.MiddleCenter);
+            var q = MakeText(_bidPanel, "Q", new Vector2(0.5f, 1f), new Vector2(0, -50), 41, TextAnchor.MiddleCenter);
             q.text = revision ? "Yeni ihalen? (veya değiştirme)" : "Kaç el alırsın?";
-            q.fontStyle = FontStyle.Bold;
+            q.fontStyle = FontStyles.Normal;
 
             float y = -96 - size / 2;
             for (int v = 0; v <= maxBid; v++)
@@ -1075,7 +1093,7 @@ namespace Bien.Unity
 
             var t = MakeText(_popup, "T", new Vector2(0.5f, 1f), new Vector2(0, -46), 50, TextAnchor.MiddleCenter);
             t.text = titleOverride ?? "PUAN TABLOSU";
-            t.fontStyle = FontStyle.Bold;
+            t.fontStyle = FontStyles.Normal;
 
             float[] colX = { -420, -210, 0, 210, 420 }; // dar aralık: 210
             const float ROW_H = 52;
@@ -1100,7 +1118,7 @@ namespace Bien.Unity
             {
                 var h = MakeText(_popup, $"H{p}", new Vector2(0.5f, 1f), new Vector2(colX[p + 1], -102), 40, TextAnchor.MiddleCenter);
                 h.text = _names[p];
-                h.fontStyle = FontStyle.Bold;
+                h.fontStyle = FontStyles.Normal;
                 h.color = new Color(1f, 0.9f, 0.45f);
             }
             var hl = MakeText(_popup, "HL", new Vector2(0.5f, 1f), new Vector2(colX[0], -102), 34, TextAnchor.MiddleCenter);
@@ -1125,17 +1143,17 @@ namespace Bien.Unity
                 var lbl = MakeText(_popup, $"R{i}", new Vector2(0.5f, 1f), new Vector2(colX[0], y), 36, TextAnchor.MiddleCenter);
                 lbl.text = rounds[i].CardsPerPlayer.ToString() + (rounds[i].HasTrump ? "" : "*");
                 lbl.color = new Color(0.7f, 0.8f, 0.75f);
-                lbl.font = _numFont;
+                if (_numFont != null) lbl.font = _numFont;
 
                 if (i >= _history.Count) continue;
                 var rr = _history[i];
                 for (int p = 0; p < 4; p++)
                 {
                     var cell = MakeText(_popup, $"C{i}_{p}", new Vector2(0.5f, 1f), new Vector2(colX[p + 1], y), 40, TextAnchor.MiddleCenter);
-                    cell.font = _numFont;
+                    if (_numFont != null) cell.font = _numFont;
                     bool made = rr.Bids[p] == rr.TricksWon[p];
                     if (made) { cell.text = rr.Scores[p].ToString(); cell.color = Color.white; }
-                    else { cell.text = "X"; cell.fontStyle = FontStyle.Bold; cell.color = new Color(1f, 0.35f, 0.3f); }
+                    else { cell.text = "X"; cell.fontStyle = FontStyles.Normal; cell.color = new Color(1f, 0.35f, 0.3f); }
                 }
             }
 
@@ -1143,16 +1161,16 @@ namespace Bien.Unity
             float ty = TOP_Y - rounds.Count * ROW_H - 18;
             var tl = MakeText(_popup, "TL", new Vector2(0.5f, 1f), new Vector2(colX[0], ty), 38, TextAnchor.MiddleCenter);
             tl.text = "TOP";
-            tl.fontStyle = FontStyle.Bold;
+            tl.fontStyle = FontStyles.Normal;
             tl.color = new Color(1f, 0.85f, 0.25f);
             for (int p = 0; p < 4; p++)
             {
                 int sum = 0;
                 foreach (var rr in _history) sum += rr.Scores[p];
                 var tot = MakeText(_popup, $"T{p}", new Vector2(0.5f, 1f), new Vector2(colX[p + 1], ty), 46, TextAnchor.MiddleCenter);
-                tot.font = _numFont;
+                if (_numFont != null) tot.font = _numFont;
                 tot.text = sum.ToString();
-                tot.fontStyle = FontStyle.Bold;
+                tot.fontStyle = FontStyles.Normal;
                 tot.color = new Color(1f, 0.85f, 0.25f);
             }
 
@@ -1170,7 +1188,7 @@ namespace Bien.Unity
 
             var t = MakeText(_popup, "T", new Vector2(0.5f, 1f), new Vector2(0, -55), 42, TextAnchor.MiddleCenter);
             t.text = "ZORLUK SEVİYESİ";
-            t.fontStyle = FontStyle.Bold;
+            t.fontStyle = FontStyles.Normal;
 
             var temp = new AiDifficulty[4];
             for (int s = 1; s <= 3; s++) temp[s] = LoadDiff(s);
@@ -1243,10 +1261,21 @@ namespace Bien.Unity
         }
 
         void HidePopup() => _popup.gameObject.SetActive(false);
-        void SetStatus(string s) => _statusText.text = s;
+        void SetStatus(string s)
+        {
+            _statusText.text = s;
+            if (!_artTable) return;
+            var box = (RectTransform)_statusText.transform.parent;
+            box.gameObject.SetActive(!string.IsNullOrEmpty(s)); // boşken gizle
+            if (string.IsNullOrEmpty(s)) return;
+            _statusText.ForceMeshUpdate();
+            float w = Mathf.Clamp(_statusText.preferredWidth + 70f, 260f, 980f);
+            box.sizeDelta = new Vector2(w, box.sizeDelta.y);     // kutu metin kadar
+            ((RectTransform)_statusText.transform).sizeDelta = new Vector2(w - 30f, 58f);
+        }
 
         /// <summary>Bir Text'in arkasına aynı hizada yarı saydam çip/arka plan koyar.</summary>
-        void AddChip(Text label, Vector2 size, Color color)
+        void AddChip(TMP_Text label, Vector2 size, Color color)
         {
             var rt = (RectTransform)label.transform;
             var chip = new GameObject(label.name + "_Chip", typeof(Image));
@@ -1276,7 +1305,7 @@ namespace Bien.Unity
         }
 
         /// <summary>Altın çerçeveli isim plakası (bien_zone deseni); içindeki Text döner.</summary>
-        Text MakeNamePill(Vector2 anchor, Vector2 pos)
+        TMP_Text MakeNamePill(Vector2 anchor, Vector2 pos)
         {
             var go = new GameObject("NamePill", typeof(Image));
             var rt = (RectTransform)go.transform;
@@ -1291,14 +1320,14 @@ namespace Bien.Unity
             im.raycastTarget = false;
             var t = MakeText(rt, "Name", new Vector2(0.5f, 0.5f), Vector2.zero, 32, TextAnchor.MiddleCenter);
             ((RectTransform)t.transform).sizeDelta = new Vector2(290, 74);
-            t.fontStyle = FontStyle.Bold;
+            t.fontStyle = FontStyles.Normal;
             t.color = new Color(0.95f, 0.87f, 0.60f);
             return t;
         }
 
         /// <summary>Altın çerçeveli etiket (isim tahtası stili): bien_zone deseni + kalın altın yazı.
         /// Dönen Text'in PARENT'ı çerçevedir; SetBid/toggle çerçeveyi komple açar-kapar.</summary>
-        Text MakeFramedLabel(Transform parent, Vector2 anchor, Vector2 pos, Vector2 size,
+        TMP_Text MakeFramedLabel(Transform parent, Vector2 anchor, Vector2 pos, Vector2 size,
                              int font, float rotZ, bool startHidden)
         {
             var go = new GameObject("Framed", typeof(Image));
@@ -1315,15 +1344,15 @@ namespace Bien.Unity
             im.raycastTarget = false;
             var t = MakeText(rt, "L", new Vector2(0.5f, 0.5f), Vector2.zero, font, TextAnchor.MiddleCenter);
             ((RectTransform)t.transform).sizeDelta = size;
-            t.font = _fancyFont; // plaka stili: süslü font varsa onu kullan
-            t.fontStyle = FontStyle.Bold;
+            if (_fancyFont != null) t.font = _fancyFont; // plaka stili
+            t.fontStyle = FontStyles.Normal;
             t.color = new Color(1f, 0.9f, 0.45f);
             if (startHidden) go.SetActive(false);
             return t;
         }
 
         /// <summary>İhale çipi: kutu + yazı tek parça; SetBid boşken kutuyu tamamen gizler.</summary>
-        Text MakeBidChip(Vector2 anchor, Vector2 pos)
+        TMP_Text MakeBidChip(Vector2 anchor, Vector2 pos)
         {
             var go = new GameObject("BidChip", typeof(Image));
             var rt = (RectTransform)go.transform;
@@ -1338,9 +1367,19 @@ namespace Bien.Unity
             var t = MakeText(rt, "L", new Vector2(0.5f, 0.5f), Vector2.zero, 28, TextAnchor.MiddleCenter);
             ((RectTransform)t.transform).sizeDelta = new Vector2(250, 48);
             t.color = new Color(1f, 0.9f, 0.45f);
-            t.fontStyle = FontStyle.Bold;
+            t.fontStyle = FontStyles.Normal;
             go.SetActive(false);
             return t;
+        }
+
+        /// <summary>Çerçeveli kutuyu sol sütun çizgisine sabitler: sol pivot + ortak çapa.
+        /// Oransal çapa + sabit genişlikte sol kenarlar ekran oranına göre kayıyordu — bu sabitler.</summary>
+        void PinLeft(TMP_Text label, float y)
+        {
+            var rt = (RectTransform)label.transform.parent;
+            rt.anchorMin = rt.anchorMax = new Vector2(405f / 2532f, 1f);
+            rt.pivot = new Vector2(0f, 0.5f);
+            rt.anchoredPosition = new Vector2(0, y);
         }
 
         /// <summary>İhale çipini yazar; boş metin çipi gizler.</summary>
@@ -1388,20 +1427,32 @@ namespace Bien.Unity
             return rt;
         }
 
-        Text MakeText(Transform parent, string name, Vector2 anchor, Vector2 pos, int size, TextAnchor align)
+        static TextAlignmentOptions ToTmp(TextAnchor a) => a switch
         {
-            var go = new GameObject(name, typeof(Text));
+            TextAnchor.UpperLeft => TextAlignmentOptions.TopLeft,
+            TextAnchor.UpperCenter => TextAlignmentOptions.Top,
+            TextAnchor.MiddleLeft => TextAlignmentOptions.Left,
+            TextAnchor.MiddleRight => TextAlignmentOptions.Right,
+            TextAnchor.LowerCenter => TextAlignmentOptions.Bottom,
+            _ => TextAlignmentOptions.Center
+        };
+
+        TMP_Text MakeText(Transform parent, string name, Vector2 anchor, Vector2 pos, int size, TextAnchor align)
+        {
+            var go = new GameObject(name, typeof(TextMeshProUGUI));
             var rt = (RectTransform)go.transform;
             rt.SetParent(parent, false);
             rt.anchorMin = rt.anchorMax = anchor;
             rt.anchoredPosition = pos;
             rt.sizeDelta = new Vector2(800, 60);
-            var t = go.GetComponent<Text>();
-            t.font = _font; t.fontSize = size; t.alignment = align;
+            var t = go.GetComponent<TextMeshProUGUI>();
+            if (_font != null) t.font = _font;
+            t.fontSize = size;
+            t.alignment = ToTmp(align);
             t.color = Color.white;
-            t.horizontalOverflow = HorizontalWrapMode.Overflow;
-            t.verticalOverflow = VerticalWrapMode.Overflow;
-            AddShadow(t, 2f, -2.5f, 0.55f); // çuha üstünde okunabilirlik
+            t.enableWordWrapping = false;
+            t.overflowMode = TextOverflowModes.Overflow;
+            t.raycastTarget = false;
             return t;
         }
 
