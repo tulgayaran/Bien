@@ -91,6 +91,16 @@ namespace Bien.Unity
         int[] _lastBids = new int[4];
         int[] _tricksWonLive = new int[4];
 
+        // --- Sırası gelen oyuncu vurgusu: isim önce 2 kez yanıp söner, sonra
+        // bir sonraki oyuncunun sırası gelene kadar dikkat çeken bir renkte kalır. ---
+        static readonly Color NameColorActive = new Color(1f, 0.85f, 0.25f); // altın sarı
+        readonly Color[] _turnLabelBaseColor = new Color[4]; // her turda okunan gerçek renk
+        Coroutine _turnBlinkCo;
+        int _turnSeat = -1;
+
+        /// <summary>_artTable modunda isim plakada (_plateTexts), yoksa köşe etiketinde (_seatLabels).</summary>
+        TMP_Text TurnLabel(int seat) => _artTable && _plateTexts[seat] != null ? _plateTexts[seat] : _seatLabels[seat];
+
         // ------------------------------------------------------------------ setup
         void Awake()
         {
@@ -240,6 +250,8 @@ namespace Bien.Unity
                 UpdateBidTotal();
             };
             ev.DealerForcedToChange += s => SetStatus($"{_names[s]} ihalesini bozmak zorunda");
+            ev.BidTurnStarted += HighlightTurn;
+            ev.PlayTurnStarted += HighlightTurn;
             ev.CardPlayed += OnCardPlayed;
             ev.TrickWon += OnTrickWon;
             ev.RoundEnded += OnRoundEnded;
@@ -302,7 +314,10 @@ namespace Bien.Unity
                 _seatLabels[i].text = _names[i] + diff + (i == dealer ? "  (dağıtan)" : "");
                 if (_plateTexts[i] != null) // plakada isim + dağıtan işareti (♦)
                     _plateTexts[i].text = _names[i] + (i == dealer ? " ♦" : "");
+                _turnLabelBaseColor[i] = TurnLabel(i).color; // sıra vurgusu bunu geri yükleyecek
             }
+            if (_turnBlinkCo != null) { StopCoroutine(_turnBlinkCo); _turnBlinkCo = null; }
+            _turnSeat = -1;
             ClearTrick();
             SetStatus("Kartlar dağıtılıyor...");
         }
@@ -460,7 +475,73 @@ namespace Bien.Unity
             if (_fast) { ClearTrick(); return; }
             var tcs = new TaskCompletionSource<bool>();
             _gate = tcs.Task;
-            StartCoroutine(ClearTrickAfter(0.9f, tcs));
+            StartCoroutine(CollectTrick(winner, tcs));
+        }
+
+        /// <summary>El bitişi: kartlar görünür kalır → dönerek merkezde deste olur →
+        /// eli alanın yönüne uçup sönerek kaybolur. Kazananı gözle takip ettirir.</summary>
+        System.Collections.IEnumerator CollectTrick(int winner, TaskCompletionSource<bool> tcs)
+        {
+            yield return new WaitForSeconds(0.45f); // masadaki eli gör
+
+            var cards = new System.Collections.Generic.List<RectTransform>();
+            var starts = new System.Collections.Generic.List<Vector2>();
+            var mids = new System.Collections.Generic.List<Vector2>();
+            var cgs = new System.Collections.Generic.List<CanvasGroup>();
+            foreach (var go in _trickCards)
+            {
+                if (go == null) continue;
+                var rt = (RectTransform)go.transform;
+                int slot = 0;
+                for (int s = 0; s < 4; s++) if (rt.parent == _trickSlots[s]) slot = s;
+                cards.Add(rt);
+                starts.Add(rt.anchoredPosition);
+                mids.Add(-_slotPos[slot]); // ekran merkezine (slot ofsetini sıfırla)
+                var cg = go.GetComponent<CanvasGroup>();
+                if (cg == null) cg = go.AddComponent<CanvasGroup>(); // ?? kullanma: Unity sahte-null tuzağı
+                cg.blocksRaycasts = false;
+                cgs.Add(cg);
+            }
+
+            // Faz 1: dönerek merkezde toplan (yarım tur)
+            float t = 0; const float D1 = 0.30f;
+            while (t < D1)
+            {
+                t += Time.deltaTime;
+                float k = 1f - Mathf.Pow(1f - Mathf.Clamp01(t / D1), 2f);
+                for (int i = 0; i < cards.Count; i++)
+                {
+                    if (cards[i] == null) continue;
+                    cards[i].anchoredPosition = Vector2.LerpUnclamped(starts[i], mids[i], k);
+                    cards[i].localRotation = Quaternion.Euler(0, 0, 180f * k);
+                    float sc = Mathf.Lerp(1f, 0.88f, k);
+                    cards[i].localScale = new Vector3(sc, sc, 1f);
+                }
+                yield return null;
+            }
+
+            // Faz 2: kazananın yönüne uç, dönmeye devam et, küçülerek sön
+            Vector2 fly = SeatFxPos(winner) * 1.4f;
+            t = 0; const float D2 = 0.34f;
+            while (t < D2)
+            {
+                t += Time.deltaTime;
+                float k = Mathf.Clamp01(t / D2);
+                float ke = k * k; // ease-in: hızlanarak gider
+                for (int i = 0; i < cards.Count; i++)
+                {
+                    if (cards[i] == null) continue;
+                    cards[i].anchoredPosition = Vector2.LerpUnclamped(mids[i], fly + mids[i], ke);
+                    cards[i].localRotation = Quaternion.Euler(0, 0, 180f + 150f * k);
+                    float sc = Mathf.Lerp(0.88f, 0.45f, ke);
+                    cards[i].localScale = new Vector3(sc, sc, 1f);
+                    cgs[i].alpha = 1f - ke;
+                }
+                yield return null;
+            }
+
+            ClearTrick();
+            tcs.TrySetResult(true);
         }
 
         System.Collections.IEnumerator ClearTrickAfter(float sec, TaskCompletionSource<bool> tcs)
@@ -667,24 +748,25 @@ namespace Bien.Unity
                 ibr.anchorMin = ibr.anchorMax = new Vector2(650f / 2532f, 1f); // koz ile üst levha arası
                 ibr.pivot = new Vector2(0f, 1f);            // sol-üst köşeden büyür
                 ibr.anchoredPosition = new Vector2(0, -95);
-                ibr.sizeDelta = new Vector2(370, 216);
+                ibr.sizeDelta = new Vector2(370, 150); // iki satır: TUR + Toplam
                 var ibi = ibox.GetComponent<Image>();
                 ibi.sprite = _plateSprite != null ? _plateSprite : _roundedSprite;
                 ibi.type = Image.Type.Sliced;
                 ibi.color = _plateSprite != null ? Color.white : new Color(0f, 0f, 0f, 0.45f);
                 ibi.raycastTarget = false;
 
-                // Sıra: TUR → mesaj → Toplam
+                // İki satır: TUR + Toplam. Mesaj satırı KALDIRILDI (sıra göstergesi ayrıca yapılacak);
+                // SetStatus çağrıları kırılmasın diye gizli bir metne yazılır.
                 _roundText = MakeText(ibr, "L1", new Vector2(0.5f, 1f), new Vector2(0, -42), 34, TextAnchor.MiddleCenter);
-                _statusText = MakeText(ibr, "L2", new Vector2(0.5f, 1f), new Vector2(0, -108), 33, TextAnchor.MiddleCenter);
-                _bidTotalText = MakeText(ibr, "L3", new Vector2(0.5f, 1f), new Vector2(0, -174), 35, TextAnchor.MiddleCenter);
-                foreach (var l in new[] { _bidTotalText, _roundText, _statusText })
+                _bidTotalText = MakeText(ibr, "L2", new Vector2(0.5f, 1f), new Vector2(0, -106), 35, TextAnchor.MiddleCenter);
+                foreach (var l in new[] { _bidTotalText, _roundText })
                 {
                     ((RectTransform)l.transform).sizeDelta = new Vector2(330, 60);
                     l.overflowMode = TextOverflowModes.Ellipsis;
                     if (_fancyFont != null) l.font = _fancyFont;
                 }
-                _statusText.color = new Color(0.95f, 0.30f, 0.25f); // mesaj: kırmızı
+                _statusText = MakeText(_decorRoot, "StatusHidden", new Vector2(0.5f, 0f), new Vector2(0, -200), 30, TextAnchor.MiddleCenter);
+                _statusText.gameObject.SetActive(false);
             }
             else
             {
@@ -863,11 +945,14 @@ namespace Bien.Unity
             int count = maxBid + 1;
             bool revision = onKeep != null;
             const float GAP = 14f;
-            float size = Mathf.Min(130f, (2080f - (count - 1) * GAP) / count);
-            float rowW = count * size + (count - 1) * GAP;
+            // Tulga: 7'den çok seçenekte kareler tek satıra sıkışmasın, ikinci satıra taşsın.
+            int cols = count > 7 ? Mathf.CeilToInt(count / 2f) : count;
+            int rows = count > 7 ? 2 : 1;
+            float size = Mathf.Min(130f, (2080f - (cols - 1) * GAP) / cols);
+            float rowW = cols * size + (cols - 1) * GAP;
 
             _bidPanel.sizeDelta = new Vector2(Mathf.Max(rowW + 90, 760),
-                                              size + 152 + (revision ? 104 : 0));
+                                              rows * size + (rows - 1) * GAP + 152 + (revision ? 104 : 0));
             _bidPanel.anchoredPosition = new Vector2(0, 70);
 
             if (_zoneSprite != null) // standart altın çerçeve (kenarlara oturur)
@@ -886,12 +971,15 @@ namespace Bien.Unity
             q.text = revision ? "Yeni ihalen? (veya değiştirme)" : "Kaç el alırsın?";
             q.fontStyle = FontStyles.Normal;
 
-            float y = -96 - size / 2;
+            float y0 = -96 - size / 2;
             for (int v = 0; v <= maxBid; v++)
             {
                 int bid = v;
                 bool blocked = forbidden.HasValue && v == forbidden.Value;
-                float x = (v - (count - 1) / 2f) * (size + GAP);
+                int r = v / cols, c2 = v % cols;
+                int itemsInRow = (r == rows - 1) ? (count - cols * (rows - 1)) : cols; // son satır kısa kalabilir
+                float x = (c2 - (itemsInRow - 1) / 2f) * (size + GAP);
+                float y = y0 - r * (size + GAP);
                 var b = MakeButton(_bidPanel, v.ToString(), new Vector2(size, size),
                                    new Vector2(0.5f, 1f), new Vector2(x, y),
                                    Mathf.RoundToInt(size * 0.42f));
@@ -1234,6 +1322,32 @@ namespace Bien.Unity
 
         void HidePopup() => _popup.gameObject.SetActive(false);
         void SetStatus(string s) => _statusText.text = s; // InfoBox ortak — sadece satır değişir
+
+        /// <summary>Sırası gelen oyuncunun isim etiketi önce 2 kez yanıp söner, sonra
+        /// dikkat çeken bir renkte sabit kalır — bir sonraki oyuncunun sırası gelene kadar.
+        /// Geri alma (fast-forward) sırasında atlanır, gürültü yapmasın diye.</summary>
+        void HighlightTurn(int seat)
+        {
+            if (_fast) return;
+            if (_turnBlinkCo != null) StopCoroutine(_turnBlinkCo);
+            if (_turnSeat >= 0 && _turnSeat != seat) TurnLabel(_turnSeat).color = _turnLabelBaseColor[_turnSeat];
+            _turnSeat = seat;
+            _turnBlinkCo = StartCoroutine(BlinkThenHighlight(seat));
+        }
+
+        System.Collections.IEnumerator BlinkThenHighlight(int seat)
+        {
+            var label = TurnLabel(seat);
+            var normal = _turnLabelBaseColor[seat];
+            for (int i = 0; i < 2; i++)
+            {
+                label.color = NameColorActive;
+                yield return new WaitForSeconds(0.15f);
+                label.color = normal;
+                yield return new WaitForSeconds(0.15f);
+            }
+            label.color = NameColorActive;
+        }
 
         /// <summary>Bir Text'in arkasına aynı hizada yarı saydam çip/arka plan koyar.</summary>
         void AddChip(TMP_Text label, Vector2 size, Color color)

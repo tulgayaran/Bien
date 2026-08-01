@@ -113,8 +113,10 @@ namespace Bien.Core.AI
                     double ev = pMake[b] * (b * b + ScoreEngine.MakeBonus);
                     if (ev > bestEv) { bestEv = ev; exBid = b; }
                 }
-                // Mizaç: Normal/Easy olasılıkla ±1 şaşar
-                if (_devProb > 0 && Rng.NextDouble() < _devProb)
+                // Mizaç: Normal/Easy olasılıkla ±1 şaşar.
+                // EASY KÜÇÜK TUR KURALI (Tulga, 2026-08): Easy ≤5 kartlık turlarda ŞAŞIRMAZ —
+                // küçük turda ±1 sapma tam ters stratejiye düşürüyordu (koz elde 0 demek gibi).
+                if (!(_tier == SkillTier.Easy && n <= 5) && _devProb > 0 && Rng.NextDouble() < _devProb)
                 {
                     int alt = exBid + (Rng.NextDouble() < 0.5 ? -1 : 1);
                     if (alt >= 0 && alt <= n && (!forbidden.HasValue || alt != forbidden.Value)) exBid = alt;
@@ -134,7 +136,7 @@ namespace Bien.Core.AI
             double adjusted = raw;
             bool deviated = false;
 
-            if (forbidden == null && _devProb > 0 && Rng.NextDouble() < _devProb)
+            if (forbidden == null && !(_tier == SkillTier.Easy && n <= 5) && _devProb > 0 && Rng.NextDouble() < _devProb)
             {
                 // Mizaç: ± U(0..mag) × kart sayısı — büyük ellerde acemilik daha pahalı
                 adjusted += (Rng.NextDouble() * 2 - 1) * _devMag * n;
