@@ -21,8 +21,6 @@ namespace Bien.Core
     {
         public Action<RoundConfig, int> RoundStarted;                  // config, dealerSeat
         public Action<IReadOnlyList<Card>[], Card?> HandsDealt;        // 4 el, koz kartı (sans'ta null)
-        public Action<int> BidTurnStarted;                             // seat: sırası geldi, ihale bekleniyor
-        public Action<int> PlayTurnStarted;                            // seat: sırası geldi, kart bekleniyor
         public Action<int, int> BidMade;                               // seat, bid
         public Action<int, int, int> BidRevised;                       // seat, oldBid, newBid
         public Action<int> DealerForcedToChange;                       // dealerSeat
@@ -112,7 +110,6 @@ namespace Bien.Core
             for (int i = 0; i < 3; i++)
             {
                 int seat = (firstBidder + i) % 4;
-                Events.BidTurnStarted?.Invoke(seat);
                 bids[seat] = ClampBid(await _agents[seat].MakeBidAsync(seat, hands[seat], rc, trump, bids, null), rc);
                 Events.BidMade?.Invoke(seat, bids[seat].Value);
             }
@@ -120,7 +117,6 @@ namespace Bien.Core
             int sumOthers = bids.Where(b => b.HasValue).Sum(b => b.Value);
             int? forbidden = BiddingEngine.ForbiddenDealerBid(sumOthers, rc.CardsPerPlayer, rc.DealerRestricted);
             // İlk soruşta dağıtıcı gerçek arzusunu söyler (kısıt bildirilmez)
-            Events.BidTurnStarted?.Invoke(dealerSeat);
             int dealerDesired = ClampBid(await _agents[dealerSeat].MakeBidAsync(dealerSeat, hands[dealerSeat], rc, trump, bids, null), rc);
 
             if (forbidden.HasValue && dealerDesired == forbidden.Value)
@@ -130,7 +126,6 @@ namespace Bien.Core
                 for (int i = 0; i < 3 && !rescued; i++)
                 {
                     int seat = (firstBidder + i) % 4;
-                    Events.BidTurnStarted?.Invoke(seat);
                     int? rev = await _agents[seat].OfferBidRevisionAsync(seat, hands[seat], rc, trump, bids, dealerDesired);
                     if (rev.HasValue && rev.Value != bids[seat])
                     {
@@ -154,7 +149,6 @@ namespace Bien.Core
                 {
                     Events.DealerForcedToChange?.Invoke(dealerSeat);
                     forbidden = BiddingEngine.ForbiddenDealerBid(sumOthers, rc.CardsPerPlayer, rc.DealerRestricted);
-                    Events.BidTurnStarted?.Invoke(dealerSeat);
                     int forced = ClampBid(await _agents[dealerSeat].MakeBidAsync(dealerSeat, hands[dealerSeat], rc, trump, bids, forbidden), rc);
                     if (forbidden.HasValue && forced == forbidden.Value)
                         forced = forced > 0 ? forced - 1 : forced + 1;
@@ -178,7 +172,6 @@ namespace Bien.Core
                 for (int i = 0; i < 4; i++)
                 {
                     int seat = (leader + i) % 4;
-                    Events.PlayTurnStarted?.Invoke(seat);
                     var card = await _agents[seat].PlayCardAsync(seat, hands[seat], trick, rc, trump);
                     if (!GameRules.IsLegalPlay(card, hands[seat], trick.LedSuit, trump))
                         throw new InvalidOperationException($"P{seat} geçersiz hamle: {card}");

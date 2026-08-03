@@ -7,12 +7,19 @@ namespace Bien.Core.AI
     /// <summary>
     /// KÜÇÜK TUR KESİN ÇÖZÜCÜ (Tulga'nın "olasılıkla çözelim" fikri).
     /// İhale anında: rakip dünyalarını örnekler (Monte Carlo), her dünyada tam-bilgili
-    /// minimax'la iki sınır hesaplar:
-    ///   max = alabileceğim EN ÇOK el (rakipler beni engellemeye çalışırken)
-    ///   min = mahkûm olduğum EN AZ el (kaçmaya çalışırken bile — koz mecburiyeti vs.)
-    /// İhale b o dünyada tutturulabilir ⇔ min ≤ b ≤ max.
-    /// P(b tutar) = dünya oranı; ihale = argmax P(b)·(b²+bonus).
-    /// Rakiplerin hasmane oynadığı varsayımı temkinli bir alt sınırdır — küçük turda isabetli.
+    /// double-dummy minimax'la o dünyada GERÇEKTEN kaç el alacağımı hesaplar (herkes
+    /// elinden geleni yaparken — rakipler beni engellemeye çalışırken).
+    /// P(b tutar) = bu değerin b'ye eşit çıktığı dünya oranı; ihale = argmax P(b)·(b²+bonus).
+    ///
+    /// Tulga (2026-08), "3 baba kart ama ihale 1" vakası: eskiden AYRICA bir "min" (kaçmaya
+    /// çalışırken bile mahkûm olunan en az el) hesaplanıp aralık [min,max] "istediğim b'ye
+    /// ayarlayabilirim" varsayılıyordu. Ama min ve max FARKLI oyunlar (rakiplerin amacı
+    /// tersti) — min sık sık max'ı GEÇİYORDU (pasif kaçış seni sona doğru istemeden büyük
+    /// el almaya sıkıştırabiliyor), bu çelişkili "imkânsız aralık" dünyaları sessizce
+    /// atlanıyordu (test ettiğim elde dünyaların YARISINDAN FAZLASI!) ve olasılık dağılımı
+    /// sistematik düşük çıkıyordu — güçlü eller bile ihalede cimri kalıyordu. Artık tek,
+    /// standart double-dummy değer kullanılıyor: aralık yok, her dünya tam olarak bir b'ye
+    /// sayılıyor, toplam olasılık her zaman %100.
     /// </summary>
     public static class ExactSolver
     {
@@ -52,9 +59,8 @@ namespace Bien.Core.AI
                     for (int k = 0; k < n; k++) hands[s].Add(work[idx++]);
                 }
 
-                int mx = Solve(CloneHands(hands), leaderSeat, trump, mySeat, maximize: true);
-                int mn = Solve(CloneHands(hands), leaderSeat, trump, mySeat, maximize: false);
-                for (int b = mn; b <= mx && b <= n; b++) makeCount[b]++;
+                int dd = Solve(CloneHands(hands), leaderSeat, trump, mySeat, maximize: true);
+                if (dd <= n) makeCount[dd]++;
             }
 
             var probs = new double[n + 1];
