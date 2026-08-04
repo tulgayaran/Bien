@@ -66,14 +66,20 @@ namespace Bien.Unity
         readonly TMP_Text[] _scoreValT = new TMP_Text[4];     // tablo: skor kolonu
         AiDifficulty[] _seatDiffs;
 
-        // --- UNDO: deterministik yeniden oynatma. Oyun tohumu + insan hamleleri kaydedilir;
-        // geri almada motor sıfırdan kurulup kayıt son hamle hariç sessizce tekrar oynatılır.
-        // Aynı tohum → AI'lar birebir aynı tepkiyi verir; hafıza/plan dahil tam tutarlılık. ---
-        struct HAct { public char K; public int V; public Card C; }   // K: b=ihale r=revizyon p=kart
+        // --- UNDO: deterministik yeniden oynatma. Oyun tohumu + TÜM oynanan kartlar (kimin
+        // attığı fark etmez) + insanın ihaleleri kaydedilir. Geri: kaydın son kartını siler,
+        // motor sıfırdan kurulup kalanlar sessizce (hızlı) tekrar oynatılır — ama SADECE
+        // silinen karta kadar; ondan sonrası (rakibin az önce attığı kart da olsa) normal
+        // hızda yeniden üretilir, böylece "bir daha geri" basma penceresi kalır. Aynı tohum →
+        // AI'lar birebir aynı tepkiyi verir; hafıza/plan dahil tam tutarlılık. ---
+        struct HAct { public char K; public int V; public Card C; public int Seat; } // K: b=ihale r=revizyon p=kart
         readonly List<HAct> _acts = new();
         Queue<HAct> _replay;
         bool _fast;
-        int _seed, _actsAtRoundStart;
+        int _seed;
+        int _replayTargetCards; // Undo() bunu "kaç kart onaylı/geçmiş sayılsın" olarak ayarlar
+        int _engineGen; // Tulga: her StartNewEngine() bir nesil artırır; eski (terk edilmiş) motor
+                         // hâlâ arka planda ilerlerse bile olayları/isteklerini görmezden geliriz.
         Button _undoBtn;
         readonly int?[] _bidsThisRound = new int?[4];
         readonly List<RoundResult> _history = new();
@@ -174,6 +180,20 @@ namespace Bien.Unity
 
         async void StartNewEngine()
         {
+            // Tulga: Undo artık HER AN basılabiliyor — rakip düşünürken, el toplanma
+            // animasyonu sürerken, ara tabloda vs. Bu yüzden eski motor "insan beklemesinde
+            // asılı kalır, zararsız" varsayımı artık garanti değil (paced gecikmesi bitip
+            // devam edebilir). Nesil numarasıyla eski motorun TÜM geri çağrılarını (olaylar,
+            // insan istekleri, tur-arası kapı) sessizce yok sayıyoruz; eski motor arka planda
+            // istediği kadar ilerlesin, ekrana/duruma asla dokunamaz.
+            int myGen = ++_engineGen;
+            bool Stale() => myGen != _engineGen;
+            // Tulga: kaçıncı karta kadarı "onaylı geçmiş" (sessizce/hızlı tekrar oynatılacak) —
+            // ondan sonrası, geri alınmış olsa bile, YENİ sayılır ve normal hızda oynanır ki
+            // basmayı bırakınca oyun kendiliğinden devam etsin, bırakmazsan tekrar basabilesin.
+            int targetCards = _replayTargetCards;
+            int emitted = 0;
+
             var rng = new System.Random(_seed);
             _history.Clear();
             HidePopup();
@@ -187,24 +207,27 @@ namespace Bien.Unity
             for (int s = 0; s < 4; s++)
                 if (_plateTexts[s] != null) _plateTexts[s].text = _names[s];
             _human = new HumanAgent();
-            // İnsan istekleri: kayıt kuyruğu doluysa (undo tekrarı) otomatik cevapla, boşsa UI
+            // İnsan istekleri: kayıt kuyruğu doluysa (undo tekrarı) otomatik cevapla, boşsa UI.
+            // Stale() kontrolü: bu, terk edilmiş bir öncekinesil motorun isteğiyse hiçbir şeye
+            // dokunma (o motor kendi cevaplanmayan Task'ında sonsuza dek asılı kalsın).
             _human.OnBidRequested = (rc, forb, bids) =>
             {
+                if (Stale()) return;
                 if (_replay != null && _replay.Count > 0) { _human.SubmitBid(_replay.Dequeue().V); return; }
                 FinishReplay(); ShowBidPanel(rc, forb, bids);
             };
             _human.OnRevisionRequested = (desired, bids, rc) =>
             {
+                if (Stale()) return;
                 if (_replay != null && _replay.Count > 0)
                 { var a = _replay.Dequeue(); _human.SubmitRevision(a.V < 0 ? (int?)null : a.V); return; }
                 FinishReplay(); ShowRevisionPanel(desired, bids, rc);
             };
             _human.OnCardRequested = (hand, led, tr) =>
             {
+                if (Stale()) return;
                 if (_replay != null && _replay.Count > 0) { _human.SubmitCard(_replay.Dequeue().C); return; }
                 FinishReplay(); EnableHandSelection(hand, led, tr);
-                _undoBtn.interactable = _acts.Count > _actsAtRoundStart &&
-                                        _acts.Count > 0 && _acts[_acts.Count - 1].K == 'p';
             };
 
             Func<Task> gate = () => _gate;
@@ -226,50 +249,95 @@ namespace Bien.Unity
                 agents[s] = new PacedAgent(ai, gate, 550);
             }
             _engine = new GameEngine(agents, rng);
-            _engine.InterRoundGate = InterRound;
+            _engine.InterRoundGate = (r, wasLast) => Stale() ? Task.CompletedTask : InterRound(r, wasLast);
 
             var ev = _engine.Events;
-            ev.RoundStarted += OnRoundStarted;
-            ev.HandsDealt += OnHandsDealt;
-            ev.BidMade += OnBidMade;
+            ev.RoundStarted += (rc, dealer) => { if (!Stale()) OnRoundStarted(rc, dealer); };
+            ev.HandsDealt += (hands, tc) => { if (!Stale()) OnHandsDealt(hands, tc); };
+            ev.BidMade += (s, b) => { if (!Stale()) OnBidMade(s, b); };
             ev.BidRevised += (s, o, n) =>
             {
+                if (Stale()) return;
                 _bidsThisRound[s] = n;
                 SetBid(s, $"İhale: {n}*  El: 0");
                 SetStatus($"{_names[s]} ihalesini {o}→{n} değiştirdi, dağıtıcı kurtarıldı");
                 UpdateBidTotal();
             };
-            ev.DealerForcedToChange += s => SetStatus($"{_names[s]} ihalesini bozmak zorunda");
-            ev.CardPlayed += OnCardPlayed;
-            ev.TrickWon += OnTrickWon;
-            ev.RoundEnded += OnRoundEnded;
-            ev.GameEnded += OnGameEnded;
+            ev.DealerForcedToChange += s => { if (!Stale()) SetStatus($"{_names[s]} ihalesini bozmak zorunda"); };
+            ev.CardPlayed += (s, c) =>
+            {
+                if (Stale()) return;
+                emitted++;
+                // Tulga: emitted <= targetCards olan kartlar zaten kayıtlı (undo öncesi de vardı) —
+                // sadece sessizce yeniden kuruluyorlar, tekrar kaydetme. targetCards'ı geçen ilk
+                // kart, geri alınandan sonra gerçekten YENİDEN üretilen karttır: kaydet, ve eğer
+                // hâlâ hızlı moddaysak buradan itibaren normal hıza dön (rakibin kartı da olsa
+                // "bir daha geri" basabilesin diye).
+                if (emitted > targetCards) RecordAct('p', 0, c, s);
+                OnCardPlayed(s, c);
+                if (_fast && emitted >= targetCards)
+                {
+                    _fast = false;
+                    PacedAgent.FastMode = false;
+                    RefreshUndoButton();
+                    SetStatus("Geri alındı — devam ediyor");
+                }
+            };
+            ev.TrickWon += (w, t) => { if (!Stale()) OnTrickWon(w, t); };
+            ev.RoundEnded += r => { if (!Stale()) OnRoundEnded(r); };
+            ev.GameEnded += totals => { if (!Stale()) OnGameEnded(totals); };
 
-            try { await _engine.PlayGameAsync(firstDealer: UnityEngine.Random.Range(0, 4)); }
+            // Tulga: firstDealer eskiden UnityEngine.Random ile (tohumsuz) seçiliyordu — Undo her
+            // StartNewEngine() çağrısında bunu YENİDEN çekip farklı bir dağıtıcıyla oyunu baştan
+            // kuruyordu, bu yüzden "geri" bazen hiçbir şey yapmıyor bazen bambaşka bir ele
+            // sıçrıyordu. Artık aynı seed'den türeyen rng kullanılıyor → her replay birebir aynı
+            // dağıtıcı sırasını üretir, geri alma gerçekten sadece son kartı geri çeker.
+            try { await _engine.PlayGameAsync(firstDealer: rng.Next(4)); }
             catch (Exception e) { Debug.LogException(e); }
         }
 
         // ------------------------------------------------------------------ engine events
-        void RecordAct(char k, int v, Card c = default)
+        void RecordAct(char k, int v, Card c = default, int seat = 0)
         {
-            _acts.Add(new HAct { K = k, V = v, C = c });
-            if (_undoBtn != null) _undoBtn.interactable = false;
+            _acts.Add(new HAct { K = k, V = v, C = c, Seat = seat });
+            RefreshUndoButton();
         }
 
-        /// <summary>Son oynanan kartını geri çeker. Ardışık basışlarla tur başına kadar gidilir.</summary>
+        /// <summary>Geri butonu: kayıttaki son şey bir kart oynanışıysa (kimin attığı fark etmez)
+        /// HER ZAMAN basılabilir — sıra kimde olursa olsun (rakip düşünürken, el toplanırken, ara
+        /// tabloda, hatta yeni tur dağıtılırken — henüz o turda ihale yapılmadıysa). Son şey bir
+        /// ihaleyse buton kapanır: ihaleler geri alınmaz, bu doğal olarak "tur başına kadar"
+        /// sınırını da oluşturur (her turun ilk kartından önce mutlaka bir ihale vardır).</summary>
+        void RefreshUndoButton()
+        {
+            if (_undoBtn == null) return;
+            _undoBtn.interactable = !_fast && _acts.Count > 0 && _acts[_acts.Count - 1].K == 'p';
+        }
+
+        /// <summary>Son oynanan kartı geri çeker — kimin attığı, sıranın kimde olduğu önemli
+        /// değil; el toplanmış olsa bile (motor sıfırdan deterministik tekrar oynatılır, son kart
+        /// hariç). Silinen kart onaylı geçmişin dışında kalır: tekrar oynatma ona kadar anında/
+        /// animasyonsuz gider, ondan SONRAsı (aynı kart yeniden üretilse bile) normal hızda
+        /// oynanır — böylece basmaya devam edip bir kart daha, bir kart daha geri alınabilir.</summary>
         void Undo()
         {
             if (_fast) return;
-            if (_acts.Count == 0 || _acts.Count <= _actsAtRoundStart) return;
-            if (_acts[_acts.Count - 1].K != 'p') return; // yalnız kart hamlesi geri alınır
+            if (_acts.Count == 0) return;
+            if (_acts[_acts.Count - 1].K != 'p') return; // yalnız kart hamlesi geri alınır (ihale değil)
+            var undone = _acts[_acts.Count - 1];
             _acts.RemoveAt(_acts.Count - 1);
+            _replayTargetCards = _acts.Count(a => a.K == 'p');
             _fast = true;
             PacedAgent.FastMode = true;
             _gate = Task.CompletedTask;
+            RefreshUndoButton();
             HidePopup();
             ClearTrick();
-            _replay = new Queue<HAct>(_acts);
-            StartNewEngine(); // eski motor terk edilir (insan beklemesinde asılı, zararsız)
+            SetStatus($"Son kart geri alındı ({_names[undone.Seat]})"); // isim ek almadan: Türkçe ünlü uyumu sorunu yok
+            // Sadece insanın kendi hamleleri (ihale + kendi kartları) motora geri beslenir —
+            // rakip kartları her zaman olduğu gibi tazeden hesaplanır (aynı tohum → aynı sonuç).
+            _replay = new Queue<HAct>(_acts.Where(a => a.K != 'p' || a.Seat == 0));
+            StartNewEngine(); // eski nesil motor terk edilir — Stale() kontrolü onu tamamen etkisiz kılar
         }
 
         void FinishReplay()
@@ -278,12 +346,12 @@ namespace Bien.Unity
             _fast = false;
             PacedAgent.FastMode = false;
             SetStatus("Geri alındı — sıra sende");
+            RefreshUndoButton();
         }
 
         void OnRoundStarted(RoundConfig rc, int dealer)
         {
-            _actsAtRoundStart = _acts.Count - (_replay?.Count ?? 0);
-            if (_undoBtn != null) _undoBtn.interactable = false;
+            RefreshUndoButton();
             AiLogger.Write($"\n--- TUR {rc.RoundIndex + 1}/16 · {rc.CardsPerPlayer} kart · {(rc.HasTrump ? "kozlu" : "SANS")} · dağıtan {SeatNames[dealer]} ---");
             _curRound = rc;
             _curDealer = dealer;
@@ -619,7 +687,8 @@ namespace Bien.Unity
                 var rt = (RectTransform)g.transform;
                 rt.anchoredPosition = new Vector2(rt.anchoredPosition.x, 0f);
             }
-            RecordAct('p', 0, card);
+            // Tulga: kayıt artık burada değil — ev.CardPlayed'de TÜM koltuklar (bu dahil) tek
+            // yerden kaydediliyor, böylece geri alma rakip kartlarını da görebiliyor.
             _human.SubmitCard(card);
         }
 
