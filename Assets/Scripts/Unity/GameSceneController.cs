@@ -32,7 +32,7 @@ namespace Bien.Unity
 
         const float CARD_W = 214f, CARD_H = 300f;          // AI kartları (0.58 ölçekle) + yedek
         const float HAND_W = 262f, HAND_H = 367f;          // SENİN kartların — büyük, yelpaze
-        const float TRICK_W = 200f, TRICK_H = 280f;        // merkezdeki oynanmış kartlar
+        const float TRICK_W = 288f, TRICK_H = 403f;        // merkezdeki oynanmış kartlar (Tulga: toplam 1.44 misli büyütüldü)
         static readonly string[] SeatNames = { "SEN", "BATI", "KUZEY", "DOĞU" };
 
         // Masa isimleri: koltuk 1-3 her oyun havuzdan rastgele, koltuk 0 kayıtlı oyuncu adı
@@ -969,7 +969,7 @@ namespace Bien.Unity
             // Tulga: KUZEY fazla yukarı çıkmıştı, biraz geri alındı; DOĞU da BATI ile simetrik
             // olsun diye aynı miktarda dışarı (sağa) alındı.
             _aiBackAreas[0] = MakeArea(_safe, "BacksW", new Vector2(0f, 0.5f), new Vector2(_artTable ? 10 : 300, -10));
-            _aiBackAreas[1] = MakeArea(_safe, "BacksN", new Vector2(0.5f, 1f), new Vector2(0, _artTable ? -90 : -275));
+            _aiBackAreas[1] = MakeArea(_safe, "BacksN", new Vector2(0.5f, 1f), new Vector2(0, _artTable ? -115 : -275)); // Tulga: kartlar büyüyünce az aşağı alındı
             _aiBackAreas[2] = MakeArea(_safe, "BacksE", new Vector2(1f, 0.5f), new Vector2(_artTable ? -40 : -300, -10));
 
             // El alanları (merkez etrafı) — sırayla alt, sol, üst, sağ; iyice iç içe pile
@@ -1112,7 +1112,7 @@ namespace Bien.Unity
         /// <summary>AI kartı yerleştirme: KUZEY yatay sıra, BATI/DOĞU yan yatık düşey sütun.</summary>
         RectTransform PlaceAiCard(int seat, RectTransform area, Sprite sprite, int i, int count)
         {
-            float w = CARD_W * 0.58f, h = CARD_H * 0.58f;
+            float w = CARD_W * 0.58f * 1.2f, h = CARD_H * 0.58f * 1.2f; // Tulga: AI kartları 1.2 misli büyütüldü
             var rt = MakeCardImage(area, sprite, w, h);
             if (seat == 2) // KUZEY: yatay
             {
@@ -1616,6 +1616,13 @@ namespace Bien.Unity
             img.sprite = sprite;
             img.preserveAspect = true;
             AddShadow(img, 4f, -6f, 0.30f); // masada derinlik hissi
+            // Tulga: kartların kenarında çizgi yoktu, üst üste binince (özellikle ortadaki
+            // büyütülmüş kartlarda) birbirine karışıyorlardı — ince koyu bir kontur ekleyip
+            // her kartın kendi sınırını her zaman belli eder hâle getirdik.
+            var outline = go.AddComponent<Outline>();
+            outline.effectColor = new Color(0.08f, 0.06f, 0.05f, 0.75f);
+            outline.effectDistance = new Vector2(2.2f, 2.2f);
+            outline.useGraphicAlpha = true;
             return rt;
         }
 
