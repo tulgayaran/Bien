@@ -106,11 +106,30 @@ namespace Bien.Core.AI
                 int leaderSeat = (Mem.DealerSeat + 1) % 4;
                 var pMake = ExactSolver.MakeProbabilities(hand, seat, trump, Mem.TrumpCard,
                                                           leaderSeat, Rng, worlds);
+
+                // MASA BASKISI (Tulga, 2026-08 — "3 kişi de kozu yok diye 0 dedi, 2 el sahipsiz
+                // kaldı, bunlar batacak" vakası): her koltuk kendi elini İZOLE değerlendiriyordu;
+                // bidsSoFar zaten motor tarafından veriliyordu ama hiç kullanılmıyordu. Şimdiye
+                // kadarki ihaleler turun kartlarına göre "tempo"dan belirgin düşükse (el
+                // sahipsiz kalıyor — biri er ya da geç o elleri alacak, matematik gereği), kalan
+                // koltuklara hafif bir prim veriyoruz: yüksek ihalenin EV'sini biraz şişiriyoruz
+                // — zorlamıyoruz, sadece sınırda/yakın kararlarda cesareti artırıyoruz. Gerçekten
+                // zayıf bir el için pMake[b] zaten çok düşük kalacağından prim onu kurtarmaz.
+                double pressure = 0;
+                int bidsPlaced = bidsSoFar.Count(b => b.HasValue);
+                if (bidsPlaced > 0)
+                {
+                    int sumSoFar = bidsSoFar.Where(b => b.HasValue).Sum(b => b.Value);
+                    double pace = n * bidsPlaced / 4.0;      // eşit dağılsaydı şimdiye kadar bu kadar olurdu
+                    double shortfall = pace - sumSoFar;      // pozitif: masa düşük gidiyor
+                    if (shortfall > 0) pressure = Math.Min(0.35, shortfall / (4 - bidsPlaced) * 0.15);
+                }
+
                 int exBid = 0; double bestEv = double.MinValue;
                 for (int b = 0; b <= n; b++)
                 {
                     if (forbidden.HasValue && b == forbidden.Value) continue;
-                    double ev = pMake[b] * (b * b + ScoreEngine.MakeBonus);
+                    double ev = pMake[b] * (b * b + ScoreEngine.MakeBonus) * (1.0 + pressure * b);
                     if (ev > bestEv) { bestEv = ev; exBid = b; }
                 }
                 // Mizaç: Normal/Easy olasılıkla ±1 şaşar.
@@ -126,13 +145,32 @@ namespace Bien.Core.AI
                 {
                     var pp = string.Join(", ", Enumerable.Range(0, n + 1)
                         .Select(b => $"P({b})=%{pMake[b] * 100:F0}"));
-                    Debug($"İHALE {exBid} ← çözücü ({worlds} dünya): {pp}");
+                    string pr = pressure > 0 ? $" | masa baskısı +%{pressure * 100:F0}/el (el sahipsiz kalıyordu)" : "";
+                    Debug($"İHALE {exBid} ← çözücü ({worlds} dünya): {pp}{pr}");
                     Debug($"PLAN: {Plan.Describe()} | mod: {Plan.Stance}");
                 }
                 return Task.FromResult(exBid);
             }
 
-            double raw = Plan.RawBid; // W + S/2
+            double rawCards = Plan.RawBid; // W + S/2 (+ uzunluk) — sadece bu elin kendi puanı
+            double raw = rawCards;
+
+            // MASA BASKISI — ters yön (Tulga, 2026-08, "iki oyuncu da aynı kozu paylaşıp ikisi
+            // de battı" vakası): W+S/2+uzunluk her eli TEK BAŞINA puanlıyor — koz birden fazla
+            // elde yoğunlaşmışsa (aynı kozu paylaşan iki güçlü el), ikisi de birbirinden
+            // habersiz yüksek söylüyor ve pratikte birbirinin önünü kesiyor. Şimdiye kadarki
+            // ihaleler turun temposunun (kart sayısı × sıradaki koltuk oranı) ÜSTÜNDEYSE masa
+            // zaten kalabalık — kalan koltukların ham puanını hafifçe aşağı çekiyoruz.
+            double tablePressure = 0;
+            int nBidsPlaced = bidsSoFar.Count(b => b.HasValue);
+            if (nBidsPlaced > 0)
+            {
+                int sumSoFar = bidsSoFar.Where(b => b.HasValue).Sum(b => b.Value);
+                double pace = n * nBidsPlaced / 4.0;
+                double excess = sumSoFar - pace; // pozitif: masa şimdiden yüksek gidiyor
+                if (excess > 0) { tablePressure = Math.Min(2.0, excess * 0.5); raw -= tablePressure; }
+            }
+
             double adjusted = raw;
             bool deviated = false;
 
@@ -181,7 +219,8 @@ namespace Bien.Core.AI
                 var parts = hand.OrderByDescending(c => CardPoints(c, trump, n))
                                 .Select(c => $"{c} {CardPoints(c, trump, n):F2}");
                 string lb = Plan.LengthBonus > 0 ? $" + uzunluk {Plan.LengthBonus:F1}" : "";
-                string msg = $"İHALE {bid} ← {string.Join(" ", parts)} | W+S/2 = {Plan.Winners}+{Plan.Swings}/2{lb} = {raw:F1}";
+                string msg = $"İHALE {bid} ← {string.Join(" ", parts)} | W+S/2 = {Plan.Winners}+{Plan.Swings}/2{lb} = {rawCards:F1}";
+                if (tablePressure > 0) msg += $" | masa baskısı -{tablePressure:F1} (masa kalabalık) → {raw:F1}";
                 if (deviated) msg += $" | mizaç → {adjusted:F2}";
                 if (zeroLifted) msg += " | 0 güvensiz (kaçamayan Swing) → 1";
                 if (forbidden.HasValue) msg += $" | yasak {forbidden.Value}, en yakın legal";

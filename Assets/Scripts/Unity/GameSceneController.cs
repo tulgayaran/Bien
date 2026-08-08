@@ -970,7 +970,7 @@ namespace Bien.Unity
             // olsun diye aynı miktarda dışarı (sağa) alındı.
             _aiBackAreas[0] = MakeArea(_safe, "BacksW", new Vector2(0f, 0.5f), new Vector2(_artTable ? 10 : 300, -10));
             _aiBackAreas[1] = MakeArea(_safe, "BacksN", new Vector2(0.5f, 1f), new Vector2(0, _artTable ? -115 : -275)); // Tulga: kartlar büyüyünce az aşağı alındı
-            _aiBackAreas[2] = MakeArea(_safe, "BacksE", new Vector2(1f, 0.5f), new Vector2(_artTable ? -40 : -300, -10));
+            _aiBackAreas[2] = MakeArea(_safe, "BacksE", new Vector2(1f, 0.5f), new Vector2(_artTable ? -75 : -300, -10)); // Tulga: notch'a girmesin diye içeri çekildi
 
             // El alanları (merkez etrafı) — sırayla alt, sol, üst, sağ; iyice iç içe pile
             _slotPos = new Vector2[] { new(0, -90), new(-115, 0), new(0, 88), new(115, 0) };
